@@ -49,6 +49,9 @@ extern void memwatch_setup();
 extern int debug_illegal;
 extern uae_u64 debug_illegal_mask;
 
+// from writelog.cpp
+extern int consoleopen;
+
 #include "barto_gdbserver.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -318,6 +321,7 @@ namespace barto_gdbserver {
 			// disable console
 			static TCHAR empty[2] = { 0 };
 			setconsolemode(empty, 1);
+			consoleopen = 1;
 
 			activate_debugger();
 			initialize_memwatch(0);
