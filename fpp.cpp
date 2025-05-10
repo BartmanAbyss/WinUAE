@@ -33,6 +33,7 @@
 #include "cpummu.h"
 #include "cpummu030.h"
 #include "debug.h"
+#include "uae.h"
 
 #ifndef CPU_TESTER
 #define SUPPORT_MMU 1
@@ -41,7 +42,9 @@
 extern void cputester_fault(void);
 #endif
 
+#ifdef WITH_SOFTFLOAT
 #include "softfloat/softfloat.h"
+#endif
 
 // global variable for JIT FPU
 #ifdef USE_LONG_DOUBLE
@@ -1513,7 +1516,7 @@ static bool fault_if_68040_integer_nonmaskable(uae_u16 opcode, uae_u16 extra, ua
 	return false;
 }
 
-static int get_fp_value(uae_u32 opcode, uae_u16 extra, fpdata *src, uaecptr oldpc, uae_u32 *adp, bool *adsetp)
+static int get_fp_value(uae_u32 opcode, uae_u16 extra, fpdata *src, uaecptr oldpc, uaecptr *adp, bool *adsetp)
 {
 	int size, mode, reg;
 	uae_u32 ad = 0;
@@ -1742,7 +1745,7 @@ static int get_fp_value(uae_u32 opcode, uae_u16 extra, fpdata *src, uaecptr oldp
 	return 1;
 }
 
-static int put_fp_value2(fpdata *value, uae_u32 opcode, uae_u16 extra, uaecptr oldpc, uae_u32 *adp, bool *adsetp)
+static int put_fp_value2(fpdata *value, uae_u32 opcode, uae_u16 extra, uaecptr oldpc, uaecptr *adp, bool *adsetp)
 {
 	int size, mode, reg;
 	uae_u32 ad = 0;
@@ -2018,7 +2021,7 @@ static int get_fp_ad (uae_u32 opcode, uae_u32 *ad, bool *adset)
 	return 1;
 }
 
-static int put_fp_value(fpdata *value, uae_u32 opcode, uae_u16 extra, uaecptr oldpc, uae_u32 *adp, bool *adsetp)
+static int put_fp_value(fpdata *value, uae_u32 opcode, uae_u16 extra, uaecptr oldpc, uaecptr *adp, bool *adsetp)
 {
 	int v = put_fp_value2(value, opcode, extra, oldpc, adp, adsetp);
 	if (v == -2) {
@@ -3638,7 +3641,9 @@ void fpu_modechange(void)
 		fpp_from_exten_fmovem(&regs.fp[i], &temp_ext[i][0], &temp_ext[i][1], &temp_ext[i][2]);
 	}
 	if (currprefs.fpu_mode > 0) {
+#ifdef WITH_SOFTFLOAT
 		fp_init_softfloat(currprefs.fpu_model);
+#endif
 #ifdef MSVC_LONG_DOUBLE
 		use_long_double = false;
 	} else if (currprefs.fpu_mode < 0) {
@@ -3680,7 +3685,9 @@ void fpu_reset (void)
 #ifndef CPU_TESTER
 	currprefs.fpu_mode = changed_prefs.fpu_mode;
 	if (currprefs.fpu_mode > 0) {
+#ifdef WITH_SOFTFLOAT
 		fp_init_softfloat(currprefs.fpu_model);
+#endif
 #ifdef MSVC_LONG_DOUBLE
 		use_long_double = false;
 	} else if (currprefs.fpu_mode < 0) {
@@ -3698,7 +3705,9 @@ void fpu_reset (void)
 	}
 
 #if defined(CPU_i386) || defined(CPU_x86_64)
+#ifndef __MACH__
 	init_fpucw_x87();
+#endif
 #ifdef MSVC_LONG_DOUBLE
 	init_fpucw_x87_80();
 #endif
@@ -3734,8 +3743,8 @@ uae_u8 *restore_fpu (uae_u8 *src)
 	int i;
 	uae_u32 flags;
 
-	fpu_reset();
 	changed_prefs.fpu_model = currprefs.fpu_model = restore_u32 ();
+	fpu_reset();
 	flags = restore_u32 ();
 	for (i = 0; i < 8; i++) {
 		w1 = restore_u16 () << 16;

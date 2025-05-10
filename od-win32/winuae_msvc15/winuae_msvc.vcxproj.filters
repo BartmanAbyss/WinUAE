@@ -74,6 +74,12 @@
       <UniqueIdentifier>{5c4c971a-37b6-4c1e-82f1-d225ebb12808}</UniqueIdentifier>
       <Extensions>ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe</Extensions>
     </Filter>
+    <Filter Include="dsp3210">
+      <UniqueIdentifier>{6f046035-4e6d-4038-a65f-d789a89ee702}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="kbmcu">
+      <UniqueIdentifier>{b60c3d87-d969-4982-8508-e9fdfc29a312}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\ahidsound_dsonly.cpp">
@@ -121,9 +127,6 @@
     <ClCompile Include="..\hardfile_win32.cpp">
       <Filter>win32</Filter>
     </ClCompile>
-    <ClCompile Include="..\hq2x_d3d.cpp">
-      <Filter>win32</Filter>
-    </ClCompile>
     <ClCompile Include="..\ioport.cpp">
       <Filter>win32</Filter>
     </ClCompile>
@@ -155,12 +158,6 @@
       <Filter>win32</Filter>
     </ClCompile>
     <ClCompile Include="..\rp.cpp">
-      <Filter>win32</Filter>
-    </ClCompile>
-    <ClCompile Include="..\scaler.cpp">
-      <Filter>win32</Filter>
-    </ClCompile>
-    <ClCompile Include="..\scaler_more.cpp">
       <Filter>win32</Filter>
     </ClCompile>
     <ClCompile Include="..\screenshot.cpp">
@@ -817,7 +814,7 @@
     <ClCompile Include="..\..\debugmem.cpp">
       <Filter>common</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\casablanca.cpp">
+    <ClCompile Include="..\..\draco.cpp">
       <Filter>common</Filter>
     </ClCompile>
     <ClCompile Include="..\fpp_native_msvc_80bit.cpp">
@@ -988,6 +985,72 @@
     <ClCompile Include="..\gdirender.cpp">
       <Filter>win32</Filter>
     </ClCompile>
+    <ClCompile Include="..\darkmode.cpp">
+      <Filter>win32</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\midiemu.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\dsp3210\DSP3210_emulation.cpp">
+      <Filter>dsp3210</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\dsp3210\dsp_glue.cpp">
+      <Filter>dsp3210</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\pcem\vid_ncr.cpp">
+      <Filter>pcem</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\pcem\vid_permedia2.cpp">
+      <Filter>pcem</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\pcem\vid_inmos.cpp">
+      <Filter>pcem</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\pcem\vid_et4000.cpp">
+      <Filter>pcem</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\pcem\vid_sc1502x_ramdac.cpp">
+      <Filter>pcem</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\pcem\vid_et4000w32.cpp">
+      <Filter>pcem</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\pcem\vid_bt482_ramdac.cpp">
+      <Filter>pcem</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\kbmcu\keyboard_mcu_6500_1.cpp">
+      <Filter>kbmcu</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\kbmcu\keyboard_mcu_6805.cpp">
+      <Filter>kbmcu</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\kbmcu\keyboard_mcu_d8039hlc .cpp">
+      <Filter>kbmcu</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\kbmcu\m6805\m68_ops.cpp">
+      <Filter>kbmcu</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\kbmcu\m6805\m68emu.cpp">
+      <Filter>kbmcu</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\kbmcu\8048\co8048.cpp">
+      <Filter>kbmcu</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\mos6502.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\pcem\vid_mga.cpp">
+      <Filter>pcem</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\pcem\vid_tvp3026_ramdac.cpp">
+      <Filter>pcem</Filter>
+    </ClCompile>
+    <ClCompile Include="..\hq2x_d3d.cpp">
+      <Filter>win32</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\pcem\keyboard_at_draco.cpp">
+      <Filter>pcem</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\resources\35floppy.ico">
@@ -1118,26 +1181,6 @@
     <CustomBuild Include="..\fpux64_80.asm">
       <Filter>nasm</Filter>
     </CustomBuild>
-    <CustomBuild Include="..\fpux86_80.asm">
-      <Filter>nasm</Filter>
-    </CustomBuild>
-    <CustomBuild Include="..\hq2x16.asm">
-      <Filter>nasm</Filter>
-    </CustomBuild>
-    <CustomBuild Include="..\hq2x32.asm">
-      <Filter>nasm</Filter>
-    </CustomBuild>
-    <CustomBuild Include="..\hq3x16.asm">
-      <Filter>nasm</Filter>
-    </CustomBuild>
-    <CustomBuild Include="..\hq3x32.asm">
-      <Filter>nasm</Filter>
-    </CustomBuild>
-    <CustomBuild Include="..\hq4x16.asm">
-      <Filter>nasm</Filter>
-    </CustomBuild>
-    <CustomBuild Include="..\hq4x32.asm">
-      <Filter>nasm</Filter>
-    </CustomBuild>
+    <CustomBuild Include="..\fpux86_80.asm" />
   </ItemGroup>
 </Project>

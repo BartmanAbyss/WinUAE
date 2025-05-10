@@ -17,6 +17,8 @@
 #include "sysconfig.h"
 #include "sysdeps.h"
 
+#ifdef CDTV
+
 #include "options.h"
 #include "memory.h"
 #include "custom.h"
@@ -27,7 +29,9 @@
 #include "gui.h"
 #include "zfile.h"
 #include "threaddep/thread.h"
+#ifdef A2091
 #include "a2091.h"
+#endif
 #include "uae.h"
 #include "savestate.h"
 #include "scsi.h"
@@ -1063,17 +1067,23 @@ static void dmac_start_dma (void)
 {
 	if (!(dmac_cntr & CNTR_PDMD)) { // non-scsi dma
 		write_comm_pipe_u32 (&requests, 0x0100, 1);
-	} else {
+	}
+#ifdef A2091
+	else {
 		scsi_dmac_a2091_start_dma (wd_cdtv);
 	}
+#endif
 }
 static void dmac_stop_dma (void)
 {
 	if (!(dmac_cntr & CNTR_PDMD)) { // non-scsi dma
 		;
-	} else {
+	}
+#ifdef A2091
+	else {
 		scsi_dmac_a2091_stop_dma (wd_cdtv);
 	}
+#endif
 }
 
 void cdtv_getdmadata (uae_u32 *acr)
@@ -1084,12 +1094,13 @@ void cdtv_getdmadata (uae_u32 *acr)
 static void checkint (void)
 {
 	int irq = 0;
-
+#ifdef A2091
 	if (cdtvscsi && (wdscsi_getauxstatus (&wd_cdtv->wc) & 0x80)) {
 		dmac_istr |= ISTR_INTS;
 		if ((dmac_cntr & CNTR_INTEN) && (dmac_istr & ISTR_INTS))
 			irq = 1;
 	}
+#endif
 	if ((dmac_cntr & CNTR_INTEN) && (dmac_istr & ISTR_E_INT))
 		irq = 1;
 	if (irq)
@@ -1276,14 +1287,18 @@ static uae_u32 dmac_bget2 (uaecptr addr)
 		v = dmac_cntr;
 		break;
 	case 0x91:
+#ifdef A2091
 		if (cdtvscsi)
 			v = wdscsi_getauxstatus (&wd_cdtv->wc);
+#endif
 		break;
 	case 0x93:
+#ifdef A2091
 		if (cdtvscsi) {
 			v = wdscsi_get (&wd_cdtv->wc, wd_cdtv);
 			checkint ();
 		}
+#endif
 		break;
 	case 0xa1:
 		sten = 0;
@@ -1383,16 +1398,20 @@ static void dmac_bput2 (uaecptr addr, uae_u32 b)
 		dmac_dawr |= b << 0;
 		break;
 	case 0x91:
+#ifdef A2091
 		if (cdtvscsi) {
 			wdscsi_sasr (&wd_cdtv->wc, b);
 			checkint ();
 		}
+#endif
 		break;
 	case 0x93:
+#ifdef A2091
 		if (cdtvscsi) {
 			wdscsi_put (&wd_cdtv->wc, wd_cdtv, b);
 			checkint ();
 		}
+#endif
 		break;
 	case 0xa1:
 		cdrom_command (b);
@@ -1524,7 +1543,7 @@ static void REGPARAM2 dmac_bput (uaecptr addr, uae_u32 b)
 
 static void open_unit (void)
 {
-	struct device_info di;
+	struct device_info di = { 0 };
 	unitnum = get_standard_cd_unit (CD_STANDARD_UNIT_CDTV);
 	sys_command_info (unitnum, &di, 0);
 	write_log (_T("using drive %s (unit %d, media %d)\n"), di.label, unitnum, di.media_inserted);
@@ -1758,7 +1777,7 @@ bool cdtv_init(struct autoconfig_info *aci)
 
 	device_add_hsync(CDTV_hsync_handler);
 	device_add_rethink(rethink_cdtv);
-	device_add_exit(cdtv_free);
+	device_add_exit(cdtv_free, NULL);
 
 	return true;
 }
@@ -1770,8 +1789,10 @@ bool cdtvscsi_init(struct autoconfig_info *aci)
 	if (!aci->doinit)
 		return true;
 	cdtvscsi = true;
+#ifdef A2091
 	init_wd_scsi(wd_cdtv, aci->rc->dma24bit);
 	wd_cdtv->dmac_type = COMMODORE_DMAC;
+#endif
 	if (configured > 0)
 		map_banks_z2(&dmac_bank, configured, 0x10000 >> 16);
 	return true;
@@ -1949,4 +1970,6 @@ void restore_cdtv_final(void)
 	}
 }
 
-#endif
+#endif /* SAVESTATE */
+
+#endif /* CDTV */

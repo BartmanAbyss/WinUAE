@@ -156,6 +156,7 @@ extern void expansion_generate_autoconfig_info(struct uae_prefs *p);
 extern struct autoconfig_info *expansion_get_autoconfig_info(struct uae_prefs*, int romtype, int devnum);
 extern struct autoconfig_info *expansion_get_autoconfig_data(struct uae_prefs *p, int index);
 extern struct autoconfig_info *expansion_get_autoconfig_by_address(struct uae_prefs *p, uaecptr addr, int index);
+extern struct autoconfig_info *expansion_get_bank_data(struct uae_prefs *p, uaecptr *addr);
 extern void expansion_set_autoconfig_sort(struct uae_prefs *p);
 extern int expansion_autoconfig_move(struct uae_prefs *p, int index, int direction, bool test);
 extern bool expansion_can_move(struct uae_prefs *p, int index);
@@ -286,5 +287,14 @@ struct memoryboardtype
 };
 extern const struct memoryboardtype memoryboards[];
 
+// More information in first revision HRM Appendix_G
+#define BOARD_PROTOAUTOCONFIG 1
+#define BOARD_AUTOCONFIG_Z2 2
+#define BOARD_AUTOCONFIG_Z3 3
+#define BOARD_NONAUTOCONFIG_BEFORE 4
+#define BOARD_NONAUTOCONFIG_AFTER_Z2 5
+#define BOARD_NONAUTOCONFIG_AFTER_Z3 6
+#define BOARD_PCI 7
+#define BOARD_IGNORE 8
 
 #endif /* UAE_AUTOCONF_H */

@@ -24,7 +24,7 @@ typedef struct
 	pci_put_func lput, wput, bput;
 } pci_addrbank;
 
-typedef int(*pci_slot_index)(uaecptr);
+typedef int(*pci_slot_index)(uaecptr, bool, uae_u32*);
 
 struct pci_config
 {
@@ -87,7 +87,7 @@ struct pci_bridge
 	int type;
 	int endian_swap_config;
 	uae_u32 io_offset;
-	uae_u32 memory_start_offset;
+	uae_u32 memory_start_offset[2];
 	int endian_swap_io;
 	uae_u32 memory_window_offset;
 	int endian_swap_memory;
@@ -95,6 +95,7 @@ struct pci_bridge
 	bool amigapicdma;
 	uae_u8 intena;
 	uae_u8 irq;
+	uae_u8 reset;
 	uae_u16 intreq_mask;
 	pci_slot_index get_index;
 	struct pci_board_state boards[MAX_PCI_BOARDS];
@@ -117,9 +118,11 @@ struct pci_bridge
 	uae_u8 acmemory[128];
 	uae_u8 acmemory_2[128];
 	struct romconfig *rc;
-	uae_u16 window;
+	uae_u16 window[2];
 	int log_slot_cnt;
 	int phys_slot_cnt;
+	bool multiwindow;
+	int windowindex;
 };
 
 extern void pci_irq_callback(struct pci_board_state *pcibs, bool irq);

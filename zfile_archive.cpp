@@ -112,6 +112,7 @@ struct zfile *archive_access_select (struct znode *parent, struct zfile *zf, uns
 	int mask = zf->zfdmask;
 	int canhistory = (mask & ZFD_DISKHISTORY) && !(mask & ZFD_CHECKONLY);
 	int getflag = (mask &  ZFD_DELAYEDOPEN) ? FILE_DELAYEDOPEN : 0;
+	int execnt = 0;
 
 	if (retcode)
 		*retcode = 0;
@@ -125,6 +126,7 @@ struct zfile *archive_access_select (struct znode *parent, struct zfile *zf, uns
 	zv = getzvolume (parent, zf, id);
 	if (!zv)
 		return NULL;
+retry:;
 	we_have_file = 0;
 	tmphist[0] = 0;
 	zipcnt = 1;
@@ -143,7 +145,7 @@ struct zfile *archive_access_select (struct znode *parent, struct zfile *zf, uns
 			if (tmphist[0]) {
 #ifndef _CONSOLE
 				if (diskimg >= 0 && canhistory)
-					DISK_history_add (tmphist, -1, diskimg, 1);
+					DISK_history_add (tmphist, -1, diskimg, 0);
 #endif
 				tmphist[0] = 0;
 				first = 0;
@@ -155,7 +157,7 @@ struct zfile *archive_access_select (struct znode *parent, struct zfile *zf, uns
 				_tcscpy (tmphist, zn->fullname);
 #ifndef _CONSOLE
 				if (diskimg >= 0 && canhistory)
-					DISK_history_add (tmphist, -1, diskimg, 1);
+					DISK_history_add (tmphist, -1, diskimg, 0);
 #endif
 				tmphist[0] = 0;
 			}
@@ -168,7 +170,7 @@ struct zfile *archive_access_select (struct znode *parent, struct zfile *zf, uns
 				select = -1;
 			if (select && we_have_file < 10) {
 				struct zfile *zt = NULL;
-				TCHAR *ext = _tcsrchr (zn->fullname, '.');
+				const TCHAR *ext = zfile_get_ext(zn->fullname);
 				int whf = 1;
 				int ft = 0;
 				if (mask & ZFD_CD) {
@@ -189,8 +191,24 @@ struct zfile *archive_access_select (struct znode *parent, struct zfile *zf, uns
 						ft = ZFILE_CDIMAGE;
 					}
 				} else {
-					zt = archive_getzfile (zn, id, getflag);
-					ft = zfile_gettype (zt);
+					zt = archive_getzfile(zn, id, getflag);
+					ft = zfile_gettype(zt);
+					// if more than 1 exe: do not mount as disk image
+					if (ft == ZFILE_EXECUTABLE) {
+						if (execnt < 0) {
+							ft = ZFILE_UNKNOWN;
+							zfile_fclose(z);
+							z = NULL;
+							zfile_fclose(zt);
+							zt = NULL;
+						} else {
+							if (execnt > 0) {
+								execnt = -1;
+								goto retry;
+							}
+							execnt++;
+						}
+					}
 				}
 				if ((select < 0 || ft) && whf > we_have_file) {
 					if (!zt)
@@ -210,7 +228,7 @@ struct zfile *archive_access_select (struct znode *parent, struct zfile *zf, uns
 #ifndef _CONSOLE
 	diskimg = zfile_is_diskimage (zfile_getname (zf));
 	if (diskimg >= 0 && first && tmphist[0] && canhistory)
-		DISK_history_add (zfile_getname (zf), -1, diskimg, 1);
+		DISK_history_add (zfile_getname (zf), -1, diskimg, 0);
 #endif
 	zfile_fclose_archive (zv);
 	if (z) {
@@ -511,7 +529,11 @@ static ISzAlloc allocTempImp;
 static SRes SzFileReadImp (void *object, void *buffer, size_t *size)
 {
 	CFileInStream *s = (CFileInStream *)object;
+#ifdef _WIN32
 	struct zfile *zf = (struct zfile*)s->file.myhandle;
+#else
+	struct zfile *zf = (struct zfile*)s->file.file;
+#endif
 	*size = zfile_fread (buffer, 1, *size, zf);
 	return SZ_OK;
 }
@@ -519,7 +541,11 @@ static SRes SzFileReadImp (void *object, void *buffer, size_t *size)
 static SRes SzFileSeekImp(void *object, Int64 *pos, ESzSeek origin)
 {
 	CFileInStream *s = (CFileInStream *)object;
+#ifdef _WIN32
 	struct zfile *zf = (struct zfile*)s->file.myhandle;
+#else
+	struct zfile *zf =(struct zfile*) s->file.file;
+#endif
 	int org = 0;
 	switch (origin)
 	{
@@ -580,7 +606,11 @@ struct zvolume *archive_directory_7z (struct zfile *z)
 	ctx->blockIndex = 0xffffffff;
 	ctx->archiveStream.s.Read = SzFileReadImp;
 	ctx->archiveStream.s.Seek = SzFileSeekImp;
+#ifdef _WIN32
 	ctx->archiveStream.file.myhandle = (void*)z;
+#else
+	ctx->archiveStream.file.file = (FILE*)z;
+#endif
 	LookToRead_CreateVTable (&ctx->lookStream, False);
 	ctx->lookStream.realStream = &ctx->archiveStream.s;
 	LookToRead_Init (&ctx->lookStream);

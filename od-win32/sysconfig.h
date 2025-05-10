@@ -48,13 +48,13 @@
 #define WINDDK /* Windows DDK available, keyboard leds and harddrive support */
 #define CATWEASEL /* Catweasel MK2/3 support */
 #define AHI /* AHI sound emulation */
+//#define AHI_v2 // AHI v2 was never completed on the Amiga-side
 #define ENFORCER /* UAE Enforcer */
 #define ECS_DENISE /* ECS DENISE new features */
 #define AGA /* AGA chipset emulation (ECS_DENISE must be enabled) */
 #define CD32 /* CD32 emulation */
 #define CDTV /* CDTV emulation */
 #define D3D /* D3D display filter support */
-//#define OPENGL /* OpenGL display filter support */
 #define PARALLEL_PORT /* parallel port emulation */
 #define PARALLEL_DIRECT /* direct parallel port emulation */
 #define SERIAL_PORT /* serial port emulation */
@@ -115,8 +115,12 @@
 #define WITH_PCI
 #define WITH_X86
 #define WITH_THREADED_CPU
+#define WITH_SOFTFLOAT
 #define FLOPPYBRIDGE
-
+#define WITH_MIDIEMU
+#define WITH_DSP
+#define WITH_DRACO
+#define WITH_MIDI
 
 #else
 
@@ -139,6 +143,20 @@
 
 #define WITH_SCSI_IOCTL
 #define WITH_SCSI_SPTI
+
+// Sound boards support
+#define WITH_SNDBOARD
+
+// CPU accelerator board support
+#define WITH_CPUBOARD
+
+// Special Monitors support
+#define WITH_SPECIALMONITORS
+
+#define VIDEOGRAB 1
+
+// Beam racing support
+#define WITH_BEAMRACER
 
 #define A_ZIP
 #define A_RAR
@@ -342,7 +360,13 @@ typedef long uae_atomic;
 #define isnan _isnan
 
 #ifndef LT_MODULE_EXT
+#ifdef _WIN32
 #define LT_MODULE_EXT _T(".dll")
+#elif __MACH__
+#define LT_MODULE_EXT _T(".dylib")
+#else
+#define LT_MODULE_EXT _T(".so")
+#endif
 #endif
 
 /* Define if you have the bcopy function.  */

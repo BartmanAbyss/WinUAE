@@ -13,7 +13,10 @@
 #include "readcpu.h"
 #include "machdep/m68k.h"
 #include "events.h"
+
+#ifdef WITH_SOFTFLOAT
 #include <softfloat/softfloat.h>
+#endif
 
 #ifndef SET_CFLG
 
@@ -163,7 +166,9 @@ typedef struct {
 
 typedef struct
 {
+#ifdef WITH_SOFTFLOAT
 	floatx80 fpx;
+#endif
 #ifdef MSVC_LONG_DOUBLE
 	union {
 		fptype fp;
@@ -207,6 +212,7 @@ struct regstruct
 	int exception;
 	int intmask;
 	int ipl[2], ipl_pin, ipl_pin_p;
+	int lastipl;
 	evt_t ipl_pin_change_evt, ipl_pin_change_evt_p;
 	evt_t ipl_evt, ipl_evt_pre;
 	int ipl_evt_pre_mode;
@@ -277,6 +283,7 @@ struct cputracememory
 	uae_u32 addr;
 	uae_u32 data;
 	int mode;
+	uae_u32 flags;
 };
 
 struct cputracestruct
@@ -319,6 +326,24 @@ extern int m68k_pc_indirect;
 extern bool m68k_interrupt_delay;
 
 extern void safe_interrupt_set(int, int, bool);
+
+#define SPCFLAG_CPUINRESET 2
+#define SPCFLAG_INT 8
+#define SPCFLAG_BRK 16
+#define SPCFLAG_UAEINT 32
+#define SPCFLAG_TRACE 64
+#define SPCFLAG_DOTRACE 128
+#define SPCFLAG_DOINT 256 /* arg, JIT fails without this.. */
+#define SPCFLAG_BLTNASTY 512
+#define SPCFLAG_EXEC 1024
+#define SPCFLAG_ACTION_REPLAY 2048
+#define SPCFLAG_TRAP 4096 /* enforcer-hack */
+#define SPCFLAG_MODE_CHANGE 8192
+#ifdef JIT
+#define SPCFLAG_END_COMPILE 16384
+#endif
+#define SPCFLAG_CHECK 32768
+#define SPCFLAG_MMURESTART 65536
 
 STATIC_INLINE void set_special_exter(uae_u32 x)
 {
@@ -664,7 +689,7 @@ extern uae_u32 REGPARAM3 x_get_disp_ea_040(uae_u32 base, int idx) REGPARAM;
 extern uae_u32 REGPARAM3 x_get_bitfield (uae_u32 src, uae_u32 bdata[2], uae_s32 offset, int width) REGPARAM;
 extern void REGPARAM3 x_put_bitfield (uae_u32 dst, uae_u32 bdata[2], uae_u32 val, uae_s32 offset, int width) REGPARAM;
 
-extern void m68k_setstopped(void);
+extern void m68k_setstopped(int stoptype);
 extern void m68k_resumestopped(void);
 extern void m68k_cancel_idle(void);
 extern void do_cycles_stop(int);
@@ -711,7 +736,6 @@ extern void init_m68k (void);
 extern void m68k_go (int);
 extern void m68k_dumpstate(uaecptr *, uaecptr);
 extern void m68k_dumpcache(bool);
-extern bool m68k_readcache(uaecptr memaddr, bool dc, uae_u32* valp);
 extern int getMulu68kCycles(uae_u16 src);
 extern int getMuls68kCycles(uae_u16 src);
 extern int getDivu68kCycles (uae_u32 dividend, uae_u16 divisor);
@@ -725,7 +749,7 @@ extern void protect_roms (bool);
 extern void unprotect_maprom (void);
 extern bool is_hardreset(void);
 extern bool is_keyboardreset(void);
-extern void Exception_build_stack_frame_common(uae_u32 oldpc, uae_u32 currpc, uae_u32 ssw, int nr);
+extern void Exception_build_stack_frame_common(uae_u32 oldpc, uae_u32 currpc, uae_u32 ssw, int nr, int vector_nr);
 extern void Exception_build_stack_frame(uae_u32 oldpc, uae_u32 currpc, uae_u32 ssw, int nr, int format);
 extern void Exception_build_68000_address_error_stack_frame(uae_u16 mode, uae_u16 opcode, uaecptr fault_addr, uaecptr pc);
 extern uae_u32 exception_pc(int nr);
@@ -752,9 +776,6 @@ extern void fpuop_bcc(uae_u32, uaecptr, uae_u32);
 extern void fpuop_save(uae_u32);
 extern void fpuop_restore(uae_u32);
 extern uae_u32 fpp_get_fpsr (void);
-extern void fpu_reset (void);
-extern void fpux_save (int*);
-extern void fpux_restore (int*);
 extern bool fpu_get_constant(fpdata *fp, int cr);
 extern int fpp_cond(int condition);
 

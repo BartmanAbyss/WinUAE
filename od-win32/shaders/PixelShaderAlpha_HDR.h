@@ -139,7 +139,7 @@ mul r1.xyz, r1.xyzx, l(0.077399, 0.077399, 0.077399, 0.000000)
 movc r1.xyz, r3.xyzx, r1.xyzx, r2.xyzx
 mad r0.xyz, r1.xyzx, l(3.750000, 3.750000, 3.750000, 0.000000), l(0.000100, 0.000100, 0.000100, 0.000000)
 lt r1.x, l(0.000000), r0.w
-lt r1.y, r0.w, l(0.007813)
+lt r1.y, r0.w, l(0.007812)
 and r1.x, r1.y, r1.x
 movc r0.xyzw, r1.xxxx, l(0,0,0,0), r0.xyzw
 sample r1.xyzw, v1.zwzz, t1.xyzw, s1
@@ -156,7 +156,7 @@ mul r2.xyz, r2.xyzx, l(0.077399, 0.077399, 0.077399, 0.000000)
 movc r2.xyz, r4.xyzx, r2.xyzx, r3.xyzx
 mad r1.xyz, r2.xyzx, l(3.750000, 3.750000, 3.750000, 0.000000), l(0.000100, 0.000100, 0.000100, 0.000000)
 lt r2.x, l(0.000000), r1.w
-lt r2.y, r1.w, l(0.007813)
+lt r2.y, r1.w, l(0.007812)
 and r2.x, r2.y, r2.x
 movc r1.xyzw, r2.xxxx, l(0,0,0,0), r1.xyzw
 add r2.x, -r1.w, l(1.000000)

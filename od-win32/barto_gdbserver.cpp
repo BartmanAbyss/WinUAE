@@ -191,7 +191,7 @@ namespace barto_gdbserver {
 	PADDRINFOW socketinfo;
 	SOCKET gdbsocket{ INVALID_SOCKET };
 	SOCKET gdbconn{ INVALID_SOCKET };
-	char socketaddr[sizeof SOCKADDR_INET];
+	char socketaddr[sizeof(SOCKADDR_INET)];
 	bool useAck{ true };
 	uint32_t baseText{};
 	uint32_t sizeText{};
@@ -214,7 +214,7 @@ namespace barto_gdbserver {
 	state debugger_state{ state::inited };
 
 	bool is_connected() {
-		socklen_t sa_len = sizeof SOCKADDR_INET;
+		socklen_t sa_len = sizeof(SOCKADDR_INET);
 		if(gdbsocket == INVALID_SOCKET)
 			return false;
 		if(gdbconn == INVALID_SOCKET) {

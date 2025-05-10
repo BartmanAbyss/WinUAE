@@ -640,6 +640,7 @@ struct picasso96_state_struct
     int         XYOffset;
     bool        dualclut, advDragging;
     int         HLineDBL, VLineDBL;
+    bool        ModeChanged;
 };
 
 extern void InitPicasso96(int monid);
@@ -667,6 +668,7 @@ extern void picasso_invalidate(int monid, int x, int y, int w, int h);
 struct picasso_vidbuf_description {
 	int width, height, depth;
 	int rowbytes, pixbytes, offset;
+    int maxwidth, maxheight; // allocated surface/texture size
 	int extra_mem; /* nonzero if there's a second buffer that must be updated */
 	uae_u32 rgbformat;
 	uae_u32 selected_rgbformat;
@@ -690,7 +692,6 @@ extern void gfx_set_picasso_colors(int monid, RGBFTYPE rgbfmt);
 extern void gfx_set_picasso_state(int monid,int on);
 extern uae_u8 *gfx_lock_picasso(int monid, bool);
 extern void gfx_unlock_picasso(int monid, bool);
-extern int createwindowscursor(int monid, uaecptr src, int w, int h, int hiressprite, int doubledsprite, int chipset);
 
 void lockrtg(void);
 void unlockrtg(void);
@@ -715,7 +716,7 @@ extern int p96refresh_active;
 #define CARD_IRQPTR (CARD_IRQFLAG + 4)
 #define CARD_IRQEXECBASE (CARD_IRQPTR + 4)
 #define CARD_IRQCODE (CARD_IRQEXECBASE + 4)
-#define CARD_END (CARD_IRQCODE + 11 * 2)
+#define CARD_END (CARD_IRQCODE + 2 * 11 * 2)
 #define CARD_SIZEOF CARD_END
 
 #endif

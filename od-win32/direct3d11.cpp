@@ -46,13 +46,13 @@ using Microsoft::WRL::ComPtr;
 #include <Dwmapi.h>
 
 void (*D3D_free)(int, bool immediate);
-const TCHAR *(*D3D_init)(HWND ahwnd, int, int w_w, int h_h, int depth, int *freq, int mmulth, int mmultv, int *err);
+const TCHAR *(*D3D_init)(HWND ahwnd, int monid, int w_w, int h_h, int *freq, int mmulth, int mmultv, int *err);
 bool (*D3D_alloctexture)(int, int, int);
 void(*D3D_refresh)(int);
 bool(*D3D_renderframe)(int, int,bool);
 void(*D3D_showframe)(int);
 void(*D3D_showframe_special)(int, int);
-uae_u8* (*D3D_locktexture)(int, int*, int*, int);
+uae_u8 *(*D3D_locktexture)(int, int*, int*, int*, int);
 void (*D3D_unlocktexture)(int, int, int);
 void (*D3D_flushtexture)(int, int miny, int maxy);
 void (*D3D_guimode)(int, int);
@@ -62,7 +62,7 @@ void (*D3D_clear)(int);
 int (*D3D_canshaders)(void);
 int (*D3D_goodenough)(void);
 bool (*D3D_setcursor)(int, int x, int y, int width, int height, float mx, float my, bool visible, bool noscale);
-uae_u8* (*D3D_setcursorsurface)(int, int *pitch);
+uae_u8 *(*D3D_setcursorsurface)(int, bool, int *pitch);
 float (*D3D_getrefreshrate)(int);
 void(*D3D_restore)(int, bool);
 void(*D3D_resize)(int, int);
@@ -72,7 +72,7 @@ bool(*D3D_run)(int);
 int(*D3D_debug)(int, int);
 void(*D3D_led)(int, int, int);
 bool(*D3D_getscanline)(int*, bool*);
-bool(*D3D_extoverlay)(struct extoverlay*);
+bool(*D3D_extoverlay)(struct extoverlay*,int);
 void(*D3D_paint)(void);
 
 static HMODULE hd3d11, hdxgi, hd3dcompiler, dwmapi;
@@ -201,6 +201,11 @@ struct d3d11sprite
 	bool enabled;
 	bool alpha;
 	bool bilinear;
+	bool rotation;
+	bool screenlimit;
+	uae_u8 *texbuf;
+	bool updated;
+	bool empty;
 };
 
 struct d3doverlay
@@ -250,6 +255,7 @@ struct d3d11struct
 	ID3D11ShaderResourceView *sltexturerv;
 	ID3D11Texture2D *texture2d, *texture2dstaging;
 	ID3D11Texture2D *sltexture;
+	int sltexture_w, sltexture_h;
 	ID3D11Texture2D *screenshottexturert, *screenshottexturetx;
 	ID3D11VertexShader *m_vertexShader;
 	ID3D11PixelShader *m_pixelShader, *m_pixelShaderSL, *m_pixelShaderMask;
@@ -264,7 +270,7 @@ struct d3d11struct
 	DXGI_FORMAT texformat;
 	bool m_tearingSupport;
 	int dmult, dmultxh, dmultxv, dmode;
-	int xoffset, yoffset;
+	float xoffset, yoffset;
 	float xmult, ymult;
 	DXGI_SWAP_CHAIN_DESC1 swapChainDesc;
 	DXGI_SWAP_CHAIN_FULLSCREEN_DESC  fsSwapChainDesc;
@@ -278,6 +284,7 @@ struct d3d11struct
 	bool blackscreen;
 	int framecount;
 	UINT syncinterval;
+	bool turbo_skip;
 	float vblank;
 	DWM_FRAME_COUNT lastframe;
 	int frames_since_init;
@@ -302,7 +309,6 @@ struct d3d11struct
 	IDXGISurface1 *hdc_surface;
 	HANDLE filenotificationhandle;
 
-	RECT sr2, dr2, zr2;
 	int guimode;
 	int delayedfs;
 	int device_errors;
@@ -444,6 +450,15 @@ static void TurnOffAlphaBlending(struct d3d11struct *d3d)
 
 	// Turn off the alpha blending.
 	d3d->m_deviceContext->OMSetBlendState(d3d->m_alphaDisableBlendingState, blendFactor, 0xffffffff);
+}
+
+static float get_rotation(struct d3d11struct *d3d, int monid)
+{
+	struct amigadisplay *ad = &adisplays[monid];
+	int rota = currprefs.gf[ad->picasso_on ? GF_RTG : ad->interlace_on ? GF_INTERLACE : GF_NORMAL].gfx_filter_rotation;
+	const float PI = 3.14159265358979f;
+	float rot = PI / 180.0f * rota;
+	return rot;
 }
 
 #define D3DX_DEFAULT ((UINT) -1)
@@ -1007,6 +1022,7 @@ static bool psEffect_LoadEffect(struct d3d11struct *d3d, const TCHAR *shaderfile
 	int layout = 0;
 	char *fx;
 	int size;
+	bool hlsl = false;
 
 	if (!pD3DCompileFromFile || !ppD3DCompile) {
 		write_log(_T("D3D11 No shader compiler available (D3DCompiler_46.dll or D3DCompiler_47.dll).\n"));
@@ -1033,6 +1049,9 @@ static bool psEffect_LoadEffect(struct d3d11struct *d3d, const TCHAR *shaderfile
 	_tcscat(tmp, shaderfile);
 	write_log(_T("Direct3D11: Attempting to load '%s'\n"), tmp);
 	_tcscpy(s->loadedshader, shaderfile);
+	if (_tcslen(tmp) > 5 && !_tcsicmp(tmp + _tcslen(tmp) - 5, _T(".hlsl"))) {
+		hlsl = true;
+	}
 
 	ID3DX11Effect *g_pEffect = NULL;
 	ID3DBlob *errors = NULL;
@@ -1054,7 +1073,7 @@ static bool psEffect_LoadEffect(struct d3d11struct *d3d, const TCHAR *shaderfile
 	z = NULL;
 
 	fx = fx1;
-	if (fxneedconvert(fx1)) {
+	if (!hlsl && fxneedconvert(fx1)) {
 		static const char *converts1[] = { "technique", "vs_3_0", "vs_2_0", "vs_1_1", "ps_3_0", "ps_2_0", NULL };
 		static const char *converts2[] = { "technique10", "vs_4_0_level_9_3", "vs_4_0_level_9_3", "vs_4_0_level_9_3", "ps_4_0_level_9_3", "ps_4_0_level_9_3", NULL };
 		fxconvert(fx1, fx2, converts1, converts2);
@@ -1068,19 +1087,27 @@ static bool psEffect_LoadEffect(struct d3d11struct *d3d, const TCHAR *shaderfile
 	}
 
 	SetCurrentDirectory(tmp2);
-	hr = D3DX11CompileEffectFromMemory(fx, strlen(fx), name, NULL, D3D_COMPILE_STANDARD_FILE_INCLUDE, dwShaderFlags, 0, d3d->m_device, &g_pEffect, &errors);
-
-#if 0
-	hr = D3DX11CompileEffectFromFile(tmp, nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, dwShaderFlags, 0, d3d->m_device, &g_pEffect, &errors);
-#endif
-
-	if (FAILED(hr)) {
-		write_log(_T("Direct3D11: D3DX11CompileEffectFromMemory('%s') failed: %08x\n"), tmp, hr);
-		void *p = errors->GetBufferPointer();
-		TCHAR *s = au((char*)p);
-		write_log(_T("Effect compiler errors:\n%s\n"), s);
-		xfree(s);
-		goto end;
+	if (hlsl) {
+		ID3DBlob *ppCode = NULL;
+		hr = D3DCompileFromFile(tmp, NULL, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "ps_5_0", 0, 0, &ppCode, &errors);
+		if (FAILED(hr)) {
+			write_log(_T("Direct3D11HLSL: D3DCompileFromFile('%s') failed: %08x\n"), tmp, hr);
+			void *p = errors->GetBufferPointer();
+			TCHAR *s = au((char *)p);
+			write_log(_T("Effect compiler errors:\n%s\n"), s);
+			xfree(s);
+			goto end;
+		}
+	} else {
+		hr = D3DX11CompileEffectFromMemory(fx, strlen(fx), name, NULL, D3D_COMPILE_STANDARD_FILE_INCLUDE, dwShaderFlags, 0, d3d->m_device, &g_pEffect, &errors);
+		if (FAILED(hr)) {
+			write_log(_T("Direct3D11FX: D3DX11CompileEffectFromMemory('%s') failed: %08x\n"), tmp, hr);
+			void *p = errors->GetBufferPointer();
+			TCHAR *s = au((char *)p);
+			write_log(_T("Effect compiler errors:\n%s\n"), s);
+			xfree(s);
+			goto end;
+		}
 	}
 
 	if (errors) {
@@ -1282,7 +1309,7 @@ static int psEffect_SetTextures(ID3D11Texture2D *lpSourceTex, ID3D11ShaderResour
 		s->m_ScaleEffectHandle->SetFloatVector((float*)&fScale);
 	}
 	if (s->framecounterHandle) {
-		s->framecounterHandle->SetFloat((float)timeframes);
+		s->framecounterHandle->SetFloat((float)vsync_counter);
 	}
 
 	return 1;
@@ -1493,109 +1520,89 @@ static bool UpdateVertexArray(struct d3d11struct *d3d, ID3D11Buffer *vertexbuffe
 	return true;
 }
 
-static bool UpdateBuffers(struct d3d11struct *d3d)
+static bool UpdateBuffers(struct d3d11struct *d3d, int monid)
 {
-	float left, right, top, bottom;
-	int positionX, positionY;
 	int bw = d3d->m_bitmapWidth;
 	int bh = d3d->m_bitmapHeight;
 	int sw = d3d->m_screenWidth;
 	int sh = d3d->m_screenHeight;
 
-	positionX = (sw - bw) / 2 + d3d->xoffset;
-	positionY = (sh - bh) / 2 + d3d->yoffset;
-
-	// Calculate the screen coordinates of the left side of the bitmap.
-	left = sw / -2.0f;
-	left += positionX;
-
-	// Calculate the screen coordinates of the right side of the bitmap.
-	right = left + bw;
-
-	// Calculate the screen coordinates of the top of the bitmap.
-	top = sh / 2.0f;
-	top -= positionY;
-
-	// Calculate the screen coordinates of the bottom of the bitmap.
-	bottom = top - bh;
+	float positionX = d3d->xoffset;
+	float positionY = -d3d->yoffset;
 
 	float slleft = 0;
 	float sltop = 0;
-	float slright = (float)bw / sw * d3d->xmult;
-	float slbottom = (float)bh / sh * d3d->ymult;
+	float slright = (float)bw * d3d->xmult / sw;
+	float slbottom = (float)bh * d3d->ymult / sh;
 
 	slright = slleft + slright;
 	slbottom = sltop + slbottom;
 
-	left *= d3d->xmult;
-	right *= d3d->xmult;
-	top *= d3d->ymult;
-	bottom *= d3d->ymult;
+	float rot = get_rotation(d3d, monid);
 
-	write_log(_T("-> %f %f %f %f %f %f\n"), left, top, right, bottom, d3d->xmult, d3d->ymult);
+	D3DXMATRIX scaling, rotation, translation, worldMatrix;
+	xD3DXMatrixScaling(&scaling, bw * d3d->xmult, bh * d3d->ymult, 1.0f);
+	xD3DXMatrixRotationZ(&rotation, rot);
 
-	UpdateVertexArray(d3d, d3d->m_vertexBuffer, left, top, right, bottom, slleft, sltop, slright, slbottom);
+	xD3DXMatrixTranslation(&translation, positionX, positionY, 0.0f);
+
+	xD3DXMatrixMultiply(&worldMatrix, &scaling, &rotation);
+	xD3DXMatrixMultiply(&worldMatrix, &worldMatrix, &translation);
+
+	d3d->m_worldMatrix = worldMatrix;
+
+	UpdateVertexArray(d3d, d3d->m_vertexBuffer, -0.5f, 0.5f, 0.5f, -0.5f, slleft, sltop, slright, slbottom);
 	return true;
 }
 
-static void setupscenecoords(struct d3d11struct *d3d, bool normalrender)
+static void setupscenecoords(struct d3d11struct *d3d, bool normalrender, int monid)
 {
-	RECT sr, dr, zr;
+	struct displayscale ds = { 0 };
 
 	if (!normalrender)
 		return;
 
-	getfilterrect2(d3d->num, &dr, &sr, &zr, d3d->m_screenWidth, d3d->m_screenHeight, d3d->m_bitmapWidth / d3d->dmult, d3d->m_bitmapHeight / d3d->dmult, d3d->dmult, &d3d->dmode, d3d->m_bitmapWidth, d3d->m_bitmapHeight);
+	ds.srcwidth = d3d->m_bitmapWidth / d3d->dmult;
+	ds.srcheight = d3d->m_bitmapHeight / d3d->dmult;
+	ds.scale = d3d->dmult;
+	ds.dstwidth = d3d->m_screenWidth;
+	ds.dstheight = d3d->m_screenHeight;
 
-	if (!memcmp(&sr, &d3d->sr2, sizeof RECT) && !memcmp(&dr, &d3d->dr2, sizeof RECT) && !memcmp(&zr, &d3d->zr2, sizeof RECT)) {
-		return;
-	}
-	if (1) {
-		write_log(_T("POS (%d %d %d %d) - (%d %d %d %d)[%d,%d] (%d %d) S=%d*%d B=%d*%d\n"),
-			dr.left, dr.top, dr.right, dr.bottom,
-			sr.left, sr.top, sr.right, sr.bottom,
-			sr.right - sr.left, sr.bottom - sr.top,
-			zr.left, zr.top,
-			d3d->m_screenWidth, d3d->m_screenHeight,
-			d3d->m_bitmapWidth, d3d->m_bitmapHeight);
-	}
+	getfilterdata(monid, &ds);
 
-	d3d->sr2 = sr;
-	d3d->dr2 = dr;
-	d3d->zr2 = zr;
+	float dw = (float)ds.dstwidth;
+	float dh = (float)ds.dstheight;
+	float w = (float)ds.outwidth;
+	float h = (float)ds.outheight;
 
-	float dw = (float)dr.right - dr.left;
-	float dh = (float)dr.bottom - dr.top;
-	float w = (float)sr.right - sr.left;
-	float h = (float)sr.bottom - sr.top;
-
-	int tx = ((dr.right - dr.left) * d3d->m_bitmapWidth) / (d3d->m_screenWidth * 2);
-	int ty = ((dr.bottom - dr.top) * d3d->m_bitmapHeight) / (d3d->m_screenHeight * 2);
+	float tx = (dw * d3d->m_bitmapWidth) / (d3d->m_screenWidth * 2);
+	float ty = (dh * d3d->m_bitmapHeight) / (d3d->m_screenHeight * 2);
 
 	float sw = dw / d3d->m_screenWidth;
 	float sh = dh / d3d->m_screenHeight;
 
-	int xshift = -zr.left - sr.left;
-	int yshift = -zr.top - sr.top;
+	float xshift = (float)-ds.xoffset;
+	float yshift = (float)-ds.yoffset;
 
-	xshift -= ((sr.right - sr.left) - d3d->m_screenWidth) / 2;
-	yshift -= ((sr.bottom - sr.top) - d3d->m_screenHeight) / 2;
+	xshift -= (w - d3d->m_screenWidth) / 2;
+	yshift -= (h - d3d->m_screenHeight) / 2;
 
-	d3d->xoffset = tx + xshift - d3d->m_screenWidth / 2;
-	d3d->yoffset = ty + yshift - d3d->m_screenHeight / 2;
+	d3d->xoffset = tx + xshift - d3d->m_screenWidth / 2.0f;
+	d3d->yoffset = ty + yshift - d3d->m_screenHeight / 2.0f;
 
 	d3d->xmult = filterrectmult(d3d->m_screenWidth, w, d3d->dmode);
 	d3d->ymult = filterrectmult(d3d->m_screenHeight, h, d3d->dmode);
 
-	d3d->cursor_offset_x = -zr.left;
-	d3d->cursor_offset_y = -zr.top;
+	d3d->xoffset *= d3d->xmult;
+	d3d->yoffset *= d3d->ymult;
 
-	write_log(_T("%d %d %.f %.f\n"), d3d->xoffset, d3d->yoffset, d3d->xmult, d3d->ymult);
+	d3d->cursor_offset_x = -ds.xoffset;
+	d3d->cursor_offset_y = -ds.yoffset;
 
-	UpdateBuffers(d3d);
+	UpdateBuffers(d3d, monid);
 
 	xD3DXMatrixOrthoOffCenterLH(&d3d->m_matProj_out, 0, w + 0.05f, 0, h + 0.05f, 0.0f, 1.0f);
-	xD3DXMatrixTranslation(&d3d->m_matView_out, (float)tx, (float)ty, 1.0f);
+	xD3DXMatrixTranslation(&d3d->m_matView_out, tx, ty, 1.0f);
 	sw *= d3d->m_bitmapWidth;
 	sh *= d3d->m_bitmapHeight;
 	xD3DXMatrixScaling(&d3d->m_matWorld_out, sw + 0.5f / sw, sh + 0.5f / sh, 1.0f);
@@ -1633,13 +1640,13 @@ static void updateleds(struct d3d11struct *d3d)
 	}
 	for (int y = 0; y < d3d->osd.height; y++) {
 		uae_u8 *buf = (uae_u8*)map.pData + y * map.RowPitch;
-		statusline_single_erase(d3d->num, buf, 32 / 8, y, d3d->ledwidth);
+		statusline_single_erase(d3d->num, buf, y, d3d->ledwidth);
 	}
-	statusline_render(d3d->num, (uae_u8*)map.pData, 32 / 8, map.RowPitch, d3d->ledwidth, d3d->ledheight, rc, gc, bc, a);
+	statusline_render(d3d->num, (uae_u8*)map.pData, map.RowPitch, d3d->ledwidth, d3d->ledheight, rc, gc, bc, a);
 
 	for (int y = 0; y < d3d->osd.height; y++) {
 		uae_u8 *buf = (uae_u8*)map.pData + y * map.RowPitch;
-		draw_status_line_single(d3d->num, buf, 32 / 8, y, d3d->ledwidth, rc, gc, bc, a);
+		draw_status_line_single(d3d->num, buf, y, d3d->ledwidth, rc, gc, bc, a);
 	}
 
 	d3d->m_deviceContext->Unmap(d3d->osd.texture, 0);
@@ -1753,6 +1760,8 @@ static void freesprite(struct d3d11sprite *s)
 		s->indexbuffer->Release();
 	if (s->matrixbuffer)
 		s->matrixbuffer->Release();
+	if (s->texbuf)
+		xfree(s->texbuf);
 
 	memset(s, 0, sizeof(struct d3d11sprite));
 }
@@ -1909,16 +1918,27 @@ static void setsprite(struct d3d11struct *d3d, struct d3d11sprite *s, float x, f
 	s->y = y;
 }
 
-static bool allocsprite(struct d3d11struct *d3d, struct d3d11sprite *s, int width, int height, bool alpha)
+static bool allocsprite(struct d3d11struct *d3d, struct d3d11sprite *s, int width, int height, bool alpha, bool rotation, bool screenlimit)
 {
 	D3D11_TEXTURE2D_DESC desc;
 	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
 	HRESULT hr;
 
 	freesprite(s);
+
 	s->width = width;
 	s->height = height;
 	s->alpha = alpha;
+	s->rotation = rotation;
+	s->screenlimit = screenlimit;
+	s->empty = true;
+
+	if (screenlimit) {
+		s->texbuf = xcalloc(uae_u8, width * height * 4);
+		if (!s->texbuf) {
+			return false;
+		}
+	}
 
 	if (!InitializeBuffers(d3d, &s->vertexbuffer, &s->indexbuffer))
 		goto err;
@@ -1993,10 +2013,6 @@ static bool CreateTexture(struct d3d11struct *d3d)
 	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
 	HRESULT hr;
 
-	memset(&d3d->sr2, 0, sizeof(RECT));
-	memset(&d3d->dr2, 0, sizeof(RECT));
-	memset(&d3d->zr2, 0, sizeof(RECT));
-
 	FreeTextures(d3d);
 
 	memset(&desc, 0, sizeof desc);
@@ -2035,8 +2051,8 @@ static bool CreateTexture(struct d3d11struct *d3d)
 		return false;
 	}
 
-	desc.Width = d3d->m_screenWidth;
-	desc.Height = d3d->m_screenHeight;
+	desc.Width = d3d->m_bitmapWidth;
+	desc.Height = d3d->m_bitmapHeight;
 	desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
 	hr = d3d->m_device->CreateTexture2D(&desc, nullptr, &d3d->screenshottexturetx);
 	if (FAILED(hr)) {
@@ -2075,12 +2091,12 @@ static bool CreateTexture(struct d3d11struct *d3d)
 	d3d->statusbar_hx = d3d->statusbar_vx = statusline_set_multiplier(mon->monitor_id, d3d->m_screenWidth, d3d->m_screenHeight) / 100;
 	d3d->ledwidth = d3d->m_screenWidth;
 	d3d->ledheight = TD_TOTAL_HEIGHT * d3d->statusbar_vx;
-	allocsprite(d3d, &d3d->osd, d3d->ledwidth, d3d->ledheight, true);
+	allocsprite(d3d, &d3d->osd, d3d->ledwidth, d3d->ledheight, true, false, false);
 	d3d->osd.enabled = true;
 
 	d3d->cursor_v = false;
 	d3d->cursor_scale = false;
-	allocsprite(d3d, &d3d->hwsprite, CURSORMAXWIDTH, CURSORMAXHEIGHT, true);
+	allocsprite(d3d, &d3d->hwsprite, CURSORMAXWIDTH, CURSORMAXHEIGHT, true, true, true);
 
 	write_log(_T("D3D11 %dx%d main texture allocated\n"), d3d->m_bitmapWidth, d3d->m_bitmapHeight);
 
@@ -2222,6 +2238,8 @@ static bool createsltexture(struct d3d11struct *d3d)
 		write_log(_T("CreateTexture2D (main) failed: %08x\n"), hr);
 		return false;
 	}
+	d3d->sltexture_w = d3d->m_screenWidth;
+	d3d->sltexture_h = d3d->m_screenHeight;
 
 	srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
 	srvDesc.Texture2D.MostDetailedMip = 0;
@@ -2273,7 +2291,7 @@ static void createscanlines(struct d3d11struct *d3d, int force)
 	if (l1 + l2 <= 0)
 		return;
 
-	if (!d3d->sltexture) {
+	if (!d3d->sltexture || d3d->sltexture_w != d3d->m_screenWidth || d3d->sltexture_h != d3d->m_screenHeight) {
 		if (d3d->scanline_osl1 == 0 && d3d->scanline_osl3 == 0)
 			return;
 		if (!createsltexture(d3d))
@@ -2286,13 +2304,13 @@ static void createscanlines(struct d3d11struct *d3d, int force)
 		return;
 	}
 	sld = (uae_u8*)map.pData;
-	for (y = 0; y < d3d->m_screenHeight; y++) {
-		memset(sld + y * map.RowPitch, 0, d3d->m_screenWidth * bpp);
+	for (y = 0; y < d3d->sltexture_h; y++) {
+		memset(sld + y * map.RowPitch, 0, d3d->sltexture_w * bpp);
 	}
-	for (y = 0; y < d3d->m_screenHeight; y += l1 + l2) {
+	for (y = 0; y < d3d->sltexture_h; y += l1 + l2) {
 		int y2 = y + (d3d->filterd3d->gfx_filter_scanlineoffset % (l1 + 1));
-		for (yy = 0; yy < l2 && y2 + yy < d3d->m_screenHeight; yy++) {
-			for (x = 0; x < d3d->m_screenWidth; x++) {
+		for (yy = 0; yy < l2 && y2 + yy < d3d->sltexture_h; yy++) {
+			for (x = 0; x < d3d->sltexture_w; x++) {
 				uae_u8 sll = sl42;
 				p = &sld[(y2 + yy) * map.RowPitch + (x * bpp)];
 				/* 32-bit, A8R8G8B8 */
@@ -2619,7 +2637,7 @@ static int createmask2texture(struct d3d11struct *d3d, const TCHAR *filename)
 	}
 	d3d->mask2texture_w = (float)img.width;
 	d3d->mask2texture_h = (float)img.height;
-	if (!allocsprite(d3d, &d3d->mask2texture, img.width, img.height, true))
+	if (!allocsprite(d3d, &d3d->mask2texture, img.width, img.height, true, true, false))
 		goto end;
 
 	D3D11_MAPPED_SUBRESOURCE map;
@@ -2675,7 +2693,7 @@ static int createmask2texture(struct d3d11struct *d3d, const TCHAR *filename)
 	d3d->mask2texture_offsetw = (d3d->m_screenWidth - d3d->mask2texture_ww) / 2;
 
 	if (d3d->mask2texture_offsetw > 0) {
-		allocsprite(d3d, &d3d->blanksprite, (int)(d3d->mask2texture_offsetw + 1), d3d->m_screenHeight, false);
+		allocsprite(d3d, &d3d->blanksprite, (int)(d3d->mask2texture_offsetw + 1), d3d->m_screenHeight, false, false, false);
 	}
 
 	xmult = d3d->mask2texture_multx;
@@ -2724,7 +2742,7 @@ static int createmask2texture(struct d3d11struct *d3d, const TCHAR *filename)
 			if (load_png_image(zf, &ledimg)) {
 				if (ledimg.width == img.width && ledimg.height == img.height) {
 					narrowimg(&ledimg, &d3d->mask2textureledoffsets[i * 2 + 0], &d3d->mask2textureledoffsets[i * 2 + 1], tmp1);
-					if (allocsprite(d3d, &d3d->mask2textureleds[i], ledimg.width, ledimg.height, true)) {
+					if (allocsprite(d3d, &d3d->mask2textureleds[i], ledimg.width, ledimg.height, true, false, false)) {
 						D3D11_MAPPED_SUBRESOURCE map;
 						hr = d3d->m_deviceContext->Map(d3d->mask2textureleds[i].texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &map);
 						if (SUCCEEDED(hr)) {
@@ -2736,7 +2754,7 @@ static int createmask2texture(struct d3d11struct *d3d, const TCHAR *filename)
 						d3d->mask2textureleds[i].enabled = true;
 						d3d->mask2textureleds[i].bilinear = true;
 						if (ledtypes[i] == LED_POWER) {
-							if (allocsprite(d3d, &d3d->mask2textureled_power_dim, ledimg.width, ledimg.height, true)) {
+							if (allocsprite(d3d, &d3d->mask2textureled_power_dim, ledimg.width, ledimg.height, true, false, false)) {
 								hr = d3d->m_deviceContext->Map(d3d->mask2textureled_power_dim.texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &map);
 								if (SUCCEEDED(hr)) {
 									for (int j = 0; j < ledimg.height; j++) {
@@ -3057,7 +3075,7 @@ static bool TextureShaderClass_InitializeShader(struct d3d11struct *d3d)
 	return true;
 }
 
-static bool initd3d(struct d3d11struct *d3d)
+static bool initd3d(struct d3d11struct *d3d, int monid)
 {
 	HRESULT result;
 	ID3D11Texture2D *backBufferPtr;
@@ -3173,7 +3191,7 @@ static bool initd3d(struct d3d11struct *d3d)
 		return false;
 	if (!InitializeBuffers(d3d, &d3d->m_vertexBuffer, &d3d->m_indexBuffer))
 		return false;
-	if (!UpdateBuffers(d3d))
+	if (!UpdateBuffers(d3d, monid))
 		return false;
 
 	settransform(d3d, NULL);
@@ -3340,7 +3358,7 @@ static void do_present(struct d3d11struct *d3d)
 	UINT syncinterval = d3d->vblankintervals;
 	// only if no vsync or low latency vsync
 	if (d3d->m_tearingSupport && (d3d->swapChainDesc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) && (!vsync || apm->gfx_vsyncmode)) {
-		if (apm->gfx_vsyncmode || d3d->num > 0 || currprefs.turbo_emulation || currprefs.gfx_variable_sync) {
+		if (apm->gfx_vsyncmode || d3d->num > 0 || currprefs.turbo_emulation || (currprefs.gfx_variable_sync > 0 || (isfs(d3d) <= 0) && currprefs.gfx_variable_sync >= 0)) {
 			presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
 			syncinterval = 0;
 		}
@@ -3350,11 +3368,14 @@ static void do_present(struct d3d11struct *d3d)
 			syncinterval = 0;
 	}
 	d3d->syncinterval = syncinterval;
+	d3d->turbo_skip = false;
 	if (currprefs.turbo_emulation) {
 		static int skip;
 		static int toggle;
-		if (--skip > 0)
+		if (--skip > 0) {
+			d3d->turbo_skip = true;
 			return;
+		}
 		skip = 10 + toggle;
 		toggle = !toggle;
 		if (os_win8)
@@ -3397,7 +3418,26 @@ static float xD3D_getrefreshrate(int monid)
 	return d3d->vblank;
 }
 
-static int xxD3D11_init2(HWND ahwnd, int monid, int w_w, int w_h, int t_w, int t_h, int depth, int *freq, int mmulth, int mmultv)
+static bool xD3D11_initvals(HWND ahwnd, int monid, int w_w, int w_h, int t_w, int t_h, int *freq, int mmulth, int mmultv, bool doalloc)
+{
+	struct d3d11struct *d3d = &d3d11data[monid];
+	bool changed = false;
+
+	if (d3d->m_screenWidth != w_w || d3d->m_screenHeight != w_h) {
+		changed = true;
+	}
+	d3d->m_screenWidth = w_w;
+	d3d->m_screenHeight = w_h;
+	d3d->dmultxh = mmulth;
+	d3d->dmultxv = mmultv;
+	if (d3d->m_device) {
+		target_graphics_buffer_update(monid, false);
+	}
+
+	return changed;
+}
+
+static int xxD3D11_init2(HWND ahwnd, int monid, int w_w, int w_h, int t_w, int t_h, int *freq, int mmulth, int mmultv)
 {
 	struct d3d11struct *d3d = &d3d11data[monid];
 	struct amigadisplay *ad = &adisplays[monid];
@@ -3416,7 +3456,7 @@ static int xxD3D11_init2(HWND ahwnd, int monid, int w_w, int w_h, int t_w, int t
 	DXGI_MODE_DESC1 *displayModeList;
 	DXGI_ADAPTER_DESC adapterDesc;
 
-	write_log(_T("D3D11 init start. (%d*%d) (%d*%d) RTG=%d Depth=%d.\n"), w_w, w_h, t_w, t_h, ad->picasso_on, depth);
+	write_log(_T("D3D11 init start. (%d*%d) (%d*%d) RTG=%d\n"), w_w, w_h, t_w, t_h, ad->picasso_on);
 
 	d3d->filterd3didx = ad->gf_index;
 	d3d->filterd3d = &currprefs.gf[d3d->filterd3didx];
@@ -3424,23 +3464,16 @@ static int xxD3D11_init2(HWND ahwnd, int monid, int w_w, int w_h, int t_w, int t
 	d3d->delayedfs = 0;
 	d3d->device_errors = 0;
 
-	if (depth != 32) {
-		return 0;
-	}
-
 	if (!can_D3D11(false)) {
 		return 0;
 	}
 
-	d3d->m_bitmapWidth = t_w;
-	d3d->m_bitmapHeight = t_h;
-	d3d->m_screenWidth = w_w;
-	d3d->m_screenHeight = w_h;
+	xD3D11_initvals(ahwnd, monid, w_w, w_h, t_w, t_h, freq, mmulth, mmultv, false);
+
 	d3d->ahwnd = ahwnd;
+
 	d3d->texformat = DXGI_FORMAT_B8G8R8A8_UNORM;
 	d3d->scrformat = DXGI_FORMAT_B8G8R8A8_UNORM;
-	d3d->dmultxh = mmulth;
-	d3d->dmultxv = mmultv;
 
 	HMONITOR winmon;
 	struct MultiDisplay *md = NULL;
@@ -3624,7 +3657,7 @@ static int xxD3D11_init2(HWND ahwnd, int monid, int w_w, int w_h, int t_w, int t
 			d3d->fsSwapChainDesc.ScanlineOrdering = m->ScanlineOrdering;
 			d3d->fsSwapChainDesc.Scaling = m->Scaling;
 			if (!hz) {
-				write_log(_T("D3D11 found matching fullscreen mode. SLO=%d S=%d. Default refresh rate.\n"), m->ScanlineOrdering, m->Scaling);
+				write_log(_T("D3D11 found matching fullscreen mode (%dx%d). SLO=%d S=%d. Default refresh rate.\n"), m->Width, m->Height, m->ScanlineOrdering, m->Scaling);
 				break;
 			}
 			if (isfs(d3d) != 0 && m->RefreshRate.Numerator && m->RefreshRate.Denominator) {
@@ -3762,14 +3795,8 @@ static int xxD3D11_init2(HWND ahwnd, int monid, int w_w, int w_h, int t_w, int t
 	UINT flags = 0;
 	result = d3d->m_device->CheckFormatSupport(d3d->texformat, &flags);
 	if (FAILED(result) || !(flags & D3D11_FORMAT_SUPPORT_TEXTURE2D)) {
-		if (depth != 32)
-			write_log(_T("Direct3D11: 16-bit texture format is not supported %08x\n"), result);
-		else
-			write_log(_T("Direct3D11: 32-bit texture format is not supported!? %08x\n"), result);
-		if (depth == 32)
-			return 0;
-		write_log(_T("Direct3D11: Retrying in 32-bit mode\n"), result);
-		return -1;
+		write_log(_T("Direct3D11: 32-bit texture format is not supported!? %08x\n"), result);
+		return 0;
 	}
 
 	// Initialize the swap chain description.
@@ -4060,6 +4087,10 @@ static void xD3D11_free(int monid, bool immediate)
 
 	//freethread(d3d);
 
+	if (d3d->texturelocked) {
+		D3D_unlocktexture(monid, -1, -1);
+	}
+
 	freed3d(d3d);
 
 	if (d3d->m_swapChain) {
@@ -4109,27 +4140,82 @@ static void xD3D11_free(int monid, bool immediate)
 	write_log(_T("D3D11 free end\n"));
 }
 
-static int xxD3D11_init(HWND ahwnd, int monid, int w_w, int w_h, int depth, int *freq, int mmulth, int mmultv)
+static int xxD3D11_init(HWND ahwnd, int monid, int w_w, int w_h, int *freq, int mmulth, int mmultv)
 {
-	return xxD3D11_init2(ahwnd, monid, w_w, w_h, w_w, w_h, depth, freq, mmulth, mmultv);
+	return xxD3D11_init2(ahwnd, monid, w_w, w_h, w_w, w_h, freq, mmulth, mmultv);
 }
 
-static const TCHAR *xD3D11_init(HWND ahwnd, int monid, int w_w, int w_h, int depth, int *freq, int mmulth, int mmultv, int *errp)
+static const TCHAR *xD3D11_init(HWND ahwnd, int monid, int w_w, int w_h, int *freq, int mmulth, int mmultv, int *errp)
 {
+	bool reset = false;
 	if (!can_D3D11(false)) {
 		*errp = 1;
 		return _T("D3D11 FAILED TO INIT");
 	}
-	int v = xxD3D11_init(ahwnd, monid, w_w, w_h, depth, freq, mmulth, mmultv);
-	if (v > 0) {
+	struct d3d11struct *d3d = &d3d11data[monid];
+	struct amigadisplay *ad = &adisplays[monid];
+	if (!D3D_isenabled(monid)) {
+		reset = true;
+	}
+	if (d3d->filterd3didx != ad->gf_index) {
+		struct gfx_filterdata *f1 = &currprefs.gf[d3d->filterd3didx];
+		if (!f1->enable) {
+			f1 = &currprefs.gf[0];
+		}
+		struct gfx_filterdata *f2 = &currprefs.gf[ad->gf_index];
+		if (!f2->enable) {
+			f2 = &currprefs.gf[0];
+		}
+		if (f1 != f2) {
+			if (f1->gfx_filter != f2->gfx_filter) {
+				reset = true;
+			}
+			for (int i = 0; i < MAX_FILTERSHADERS * 2 + 1; i++) {
+				if (_tcsicmp(f1->gfx_filtershader[i], f2->gfx_filtershader[i])) {
+					reset = true;
+				}
+				if (_tcsicmp(f1->gfx_filtermask[i], f2->gfx_filtermask[i])) {
+					reset = true;
+				}
+			}
+			if (_tcsicmp(f1->gfx_filteroverlay, f2->gfx_filteroverlay)) {
+				reset = true;
+			}
+			if (f1->gfx_filter_scanlines != f2->gfx_filter_scanlines) {
+				reset = true;
+			}
+			if (f1->gfx_filter_scanlineratio != f2->gfx_filter_scanlineratio) {
+				reset = true;
+			}
+			if (f1->gfx_filter_scanlinelevel != f2->gfx_filter_scanlinelevel) {
+				reset = true;
+			}
+			if (f1->gfx_filter_scanlineoffset != f2->gfx_filter_scanlineoffset) {
+				reset = true;
+			}
+		}
+	}
+	if (reset) {
+		xD3D11_free(monid, true);
+		int v = xxD3D11_init(ahwnd, monid, w_w, w_h, freq, mmulth, mmultv);
+		if (v > 0) {
+			return NULL;
+		}
+		xD3D11_free(monid, true);
+		*errp = 1;
+		if (v <= 0) {
+			return _T("");
+		}
+		return _T("D3D11 INITIALIZATION ERROR");
+	} else {
+		struct d3d11struct *d3d = &d3d11data[monid];
+		if (xD3D11_initvals(ahwnd, monid, w_w, w_h, w_w, w_h, freq, mmulth, mmultv, true)) {
+			d3d->fsresizedo = true;
+		} else {
+			*errp = -1;
+		}
 		return NULL;
 	}
-	xD3D11_free(monid, true);
-	*errp = 1;
-	if (v <= 0) {
-		return _T("");
-	}
-	return _T("D3D11 INITIALIZATION ERROR");
 }
 
 static void setpsbuffer(struct d3d11struct *d3d, ID3D11Buffer *psbuffer)
@@ -4251,34 +4337,50 @@ static void TextureShaderClass_RenderShader(struct d3d11struct *d3d)
 	d3d->m_deviceContext->DrawIndexed(INDEXCOUNT, 0, 0);
 }
 
-static void RenderSprite(struct d3d11struct *d3d, struct d3d11sprite *spr)
+static void RenderSprite(struct d3d11struct *d3d, struct d3d11sprite *spr, int monid)
 {
-	float left, top, right, bottom;
+	D3DXMATRIX scaling, rotation, translation, worldMatrix;
+	float left, top;
+	float w, h;
+	float rot = 0;
 
 	if (!spr->enabled)
 		return;
 	
-	left = (float)((d3d->m_screenWidth + 1) / -2);
-	left += spr->x;
-	top = (float)((d3d->m_screenHeight + 1) / 2);
-	top -= spr->y;
+	left = spr->x;
+	top = -spr->y;
 
 	if (spr->outwidth) {
-		right = left + spr->outwidth;
+		w = spr->outwidth;
 	} else {
-		right = left + spr->width;
+		w = (float)spr->width;
 	}
 	if (spr->outheight) {
-		bottom = top - spr->outheight;
+		h = spr->outheight;
 	} else {
-		bottom = top - spr->height;
+		h = (float)spr->height;
 	}
 
-	UpdateVertexArray(d3d, spr->vertexbuffer, left, top, right, bottom, 0, 0, 0, 0);
+	if (spr->rotation) {
+		rot = get_rotation(d3d, monid);
+	}
+
+	xD3DXMatrixScaling(&scaling, w, h, 1.0f);
+	xD3DXMatrixRotationZ(&rotation, rot);
+
+	left += (int)(w / 2 + 0.5f) - d3d->m_screenWidth / 2;
+	top += (int)(-h / 2 - 0.5f) + d3d->m_screenHeight / 2;
+
+	xD3DXMatrixTranslation(&translation, left, top, 0.0f);
+
+	xD3DXMatrixMultiply(&worldMatrix, &scaling, &rotation);
+	xD3DXMatrixMultiply(&worldMatrix, &worldMatrix, &translation);
+
+	UpdateVertexArray(d3d, spr->vertexbuffer, -0.5f, 0.5f, 0.5f, -0.5f, 0, 0, 0, 0);
 
 	RenderBuffers(d3d, spr->vertexbuffer, spr->indexbuffer);
 
-	if (!setmatrix(d3d, spr->matrixbuffer, d3d->m_worldMatrix, d3d->m_viewMatrix, d3d->m_orthoMatrix))
+	if (!setmatrix(d3d, spr->matrixbuffer, worldMatrix, d3d->m_viewMatrix, d3d->m_orthoMatrix))
 		return;
 
 	if (spr->alpha)
@@ -4304,11 +4406,11 @@ static void RenderSprite(struct d3d11struct *d3d, struct d3d11sprite *spr)
 
 static void setspritescaling(struct d3d11sprite *spr, float w, float h)
 {
-	spr->outwidth = w * spr->width + 0.5f;
-	spr->outheight = h * spr->height + 0.5f;
+	spr->outwidth = w * spr->width;
+	spr->outheight = h * spr->height;
 }
 
-static void renderoverlay(struct d3d11struct *d3d)
+static void renderoverlay(struct d3d11struct *d3d, int monid)
 {
 	if (!d3d->mask2texture.enabled)
 		return;
@@ -4341,7 +4443,7 @@ static void renderoverlay(struct d3d11struct *d3d)
 #endif
 
 	setsprite(d3d, spr, d3d->mask2texture_offsetw, 0);
-	RenderSprite(d3d, spr);
+	RenderSprite(d3d, spr, monid);
 
 	for (int i = 0; overlayleds[i]; i++) {
 		bool led = leds[ledtypes[i]] != 0;
@@ -4354,7 +4456,7 @@ static void renderoverlay(struct d3d11struct *d3d)
 				setsprite(d3d, sprled,
 					d3d->mask2texture_offsetw + d3d->mask2textureledoffsets[i * 2 + 0] * d3d->mask2texture_multx,
 					d3d->mask2textureledoffsets[i * 2 + 1] * d3d->mask2texture_multy);
-				RenderSprite(d3d, sprled);
+				RenderSprite(d3d, sprled, monid);
 			}
 		}
 	}
@@ -4362,9 +4464,9 @@ static void renderoverlay(struct d3d11struct *d3d)
 	if (d3d->mask2texture_offsetw > 0) {
 		struct d3d11sprite *bspr = &d3d->blanksprite;
 		setsprite(d3d, bspr, 0, 0);
-		RenderSprite(d3d, bspr);
+		RenderSprite(d3d, bspr, monid);
 		setsprite(d3d, bspr, d3d->mask2texture_offsetw + d3d->mask2texture_ww, 0);
-		RenderSprite(d3d, bspr);
+		RenderSprite(d3d, bspr, monid);
 	}
 }
 
@@ -4388,10 +4490,15 @@ static void clearrt(struct d3d11struct *d3d)
 {
 	// Setup the color to clear the buffer to.
 	float color[4];
-	color[0] = 0;
-	color[1] = 0;
-	color[2] = 0;
-	color[3] = 0;
+	int a = (currprefs.gfx_bordercolor >> 24) & 0xff;
+	int r = (currprefs.gfx_bordercolor >> 16) & 0xff;
+	int g = (currprefs.gfx_bordercolor >> 8) & 0xff;
+	int b = (currprefs.gfx_bordercolor >> 0) & 0xff;
+
+	color[3] = (float)a / 255.0f;
+	color[2] = (float)b / 255.0f;
+	color[1] = (float)g / 255.0f;
+	color[0] = (float)r / 255.0f;
 
 	if (noclear && cannoclear) {
 		if (clearcnt > 3)
@@ -4511,19 +4618,29 @@ static bool renderframe(struct d3d11struct *d3d)
 	return true;
 }
 
-static bool TextureShaderClass_Render(struct d3d11struct *d3d)
+static bool TextureShaderClass_Render(struct d3d11struct *d3d, int monid)
 {
+	struct AmigaMonitor *mon = &AMonitors[monid];
+
+	bool rtg = WIN32GFX_IsPicassoScreen(mon);
+	if (((currprefs.leds_on_screen & STATUSLINE_CHIPSET) && !rtg) || ((currprefs.leds_on_screen & STATUSLINE_RTG) && rtg)) {
+		d3d->osd.enabled = true;
+		updateleds(d3d);
+	} else {
+		d3d->osd.enabled = false;
+	}
+
 	renderframe(d3d);
 
-	RenderSprite(d3d, &d3d->hwsprite);
+	RenderSprite(d3d, &d3d->hwsprite, monid);
 
-	renderoverlay(d3d);
+	renderoverlay(d3d, monid);
 
-	RenderSprite(d3d, &d3d->osd);
+	RenderSprite(d3d, &d3d->osd, monid);
 
 	struct d3doverlay *ov = d3d->extoverlays;
 	while (ov) {
-		RenderSprite(d3d, &ov->s);
+		RenderSprite(d3d, &ov->s, monid);
 		ov = ov->next;
 	}
 
@@ -4570,17 +4687,17 @@ static void CameraClass_Render(struct d3d11struct *d3d)
 	xD3DXMatrixLookAtLH(&d3d->m_viewMatrix, &position, &lookAt, &up);
 }
 
-static bool GraphicsClass_Render(struct d3d11struct *d3d, float rotation, bool normalrender)
+static bool GraphicsClass_Render(struct d3d11struct *d3d, bool normalrender, int monid)
 {
 	bool result;
 
-	setupscenecoords(d3d, normalrender);
+	setupscenecoords(d3d, normalrender, monid);
 
 	// Generate the view matrix based on the camera's position.
 	CameraClass_Render(d3d);
 
 	// Render the bitmap with the texture shader.
-	result = TextureShaderClass_Render(d3d);
+	result = TextureShaderClass_Render(d3d, monid);
 
 	if (!result)
 		return false;
@@ -4718,7 +4835,7 @@ static bool restore(struct d3d11struct *d3d)
 	return true;
 }
 
-static void resizemode(struct d3d11struct *d3d);
+static void resizemode(struct d3d11struct *d3d, int monid);
 
 static bool xD3D11_renderframe(int monid, int mode, bool immediate)
 {
@@ -4728,29 +4845,38 @@ static bool xD3D11_renderframe(int monid, int mode, bool immediate)
 
 	d3d->frames_since_init++;
 
-	if (mode > 0 && (mode & 2))
+	if (mode > 0 && (mode & 2)) {
 		slicecnt = 0;
-	else if (mode < 0)
+	} else if (mode < 0) {
 		slicecnt = slicecnt == 2 ? 0 : slicecnt;
+	}
 
-	if (!d3d->m_swapChain)
+	if (!d3d->m_swapChain) {
 		return false;
+	}
 
-	if (d3d->fsmodechange)
+	if (d3d->fsmodechange) {
 		D3D_resize(monid, 0);
+	}
 
-	if (d3d->invalidmode)
+	if (d3d->invalidmode) {
 		return false;
+	}
 
 	if (d3d->delayedrestore) {
 		d3d->delayedrestore = false;
 		restore(d3d);
 	}
 
-	if (d3d->delayedfs || !d3d->texture2d || !d3d->d3dinit_done)
+	if (d3d->delayedfs || !d3d->texture2d || !d3d->d3dinit_done) {
 		return false;
+	}
 
-	GraphicsClass_Render(d3d, 0, mode < 0 || (mode & 1));
+	if (d3d->turbo_skip) {
+		return true;
+	}
+
+	GraphicsClass_Render(d3d, mode < 0 || (mode & 1), monid);
 
 	if (d3d->filenotificationhandle != NULL) {
 		bool notify = false;
@@ -4851,7 +4977,7 @@ static void xD3D11_refresh(int monid)
 }
 
 
-static bool D3D11_resize_do(struct d3d11struct *d3d)
+static bool D3D11_resize_do(struct d3d11struct *d3d, int monid)
 {
 	HRESULT hr;
 
@@ -4892,21 +5018,21 @@ static bool D3D11_resize_do(struct d3d11struct *d3d)
 		write_log(_T("D3D11_resize -> none\n"));
 	}
 
-	resizemode(d3d);
+	resizemode(d3d, monid);
 
 	write_log(_T("D3D11 resize exit\n"));
 	return true;
 }
 
 
-static bool recheck(struct d3d11struct *d3d)
+static bool recheck(struct d3d11struct *d3d, int monid)
 {
 	bool r = false;
 	if (xD3D11_quit(d3d))
 		return r;
-	r = D3D11_resize_do(d3d);
+	r = D3D11_resize_do(d3d, monid);
 	if (d3d->resizeretry) {
-		resizemode(d3d);
+		resizemode(d3d, monid);
 		return r;
 	}
 	if (!d3d->delayedfs)
@@ -4915,7 +5041,7 @@ static bool recheck(struct d3d11struct *d3d)
 	d3d->delayedfs = 0;
 	ShowWindow(d3d->ahwnd, SW_SHOWNORMAL);
 	int freq = 0;
-	if (!xxD3D11_init2(d3d->ahwnd, d3d->num, d3d->m_screenWidth, d3d->m_screenHeight, d3d->m_bitmapWidth2, d3d->m_bitmapHeight2, 32, &freq, d3d->dmultxh, d3d->dmultxv))
+	if (!xxD3D11_init2(d3d->ahwnd, d3d->num, d3d->m_screenWidth, d3d->m_screenHeight, d3d->m_bitmapWidth2, d3d->m_bitmapHeight2, &freq, d3d->dmultxh, d3d->dmultxv))
 		d3d->invalidmode = true;
 	return false;
 }
@@ -4925,17 +5051,33 @@ static bool xD3D11_alloctexture(int monid, int w, int h)
 	struct d3d11struct *d3d = &d3d11data[monid];
 	bool v;
 
-	recheck(d3d);
-
-	if (d3d->invalidmode)
+	if (w == 0 || h == 0) {
 		return false;
+	}
+	if (w < 0 || h < 0) {
+		if (d3d->m_bitmapWidth == -w && d3d->m_bitmapHeight == -h && d3d->texture2d) {
+			return true;
+		}
+		return false;
+	}
+
+	if (d3d->texturelocked) {
+		D3D_unlocktexture(monid, -1, -1);
+	}
+
+	if (d3d->invalidmode || !d3d->m_device) {
+		return false;
+	}
+
 	d3d->m_bitmapWidth = w;
 	d3d->m_bitmapHeight = h;
 	d3d->m_bitmapWidth2 = d3d->m_bitmapWidth;
 	d3d->m_bitmapHeight2 = d3d->m_bitmapHeight;
-	d3d->dmult = S2X_getmult(monid);
+	d3d->dmult = 1; // S2X_getmult(monid);
 	d3d->m_bitmapWidthX = d3d->m_bitmapWidth * d3d->dmultxh;
 	d3d->m_bitmapHeightX = d3d->m_bitmapHeight * d3d->dmultxv;
+
+	recheck(d3d, monid);
 
 	v = CreateTexture(d3d);
 	if (!v)
@@ -4948,7 +5090,7 @@ static bool xD3D11_alloctexture(int monid, int w, int h)
 		d3d->delayedrestore = true;
 	}
 
-	setupscenecoords(d3d, true);
+	setupscenecoords(d3d, true, monid);
 
 	changed_prefs.leds_on_screen |= STATUSLINE_TARGET;
 	currprefs.leds_on_screen |= STATUSLINE_TARGET;
@@ -4956,11 +5098,21 @@ static bool xD3D11_alloctexture(int monid, int w, int h)
 	return true;
 }
 
-static uae_u8 *xD3D11_locktexture(int monid, int *pitch, int *height, int fullupdate)
+static uae_u8 *xD3D11_locktexture(int monid, int *pitch, int *width, int *height, int fullupdate)
 {
 	struct d3d11struct *d3d = &d3d11data[monid];
 
 	// texture allocation must not cause side-effects
+
+	if (height)
+		*height = d3d->m_bitmapHeight;
+	if (width)
+		*width = d3d->m_bitmapWidth;
+
+	if (d3d->texturelocked) {
+		write_log("D3D11_locktexture: already locked!\n");
+		return NULL;
+	}
 
 	if (d3d->invalidmode || !d3d->texture2d)
 		return NULL;
@@ -4973,19 +5125,18 @@ static uae_u8 *xD3D11_locktexture(int monid, int *pitch, int *height, int fullup
 		return NULL;
 	}
 	*pitch = map.RowPitch;
-	if (height)
-		*height = d3d->m_bitmapHeight;
 	d3d->texturelocked++;
 	return (uae_u8*)map.pData;
 }
 
 static void xD3D11_unlocktexture(int monid, int y_start, int y_end)
 {
-	struct AmigaMonitor *mon = &AMonitors[monid];
 	struct d3d11struct *d3d = &d3d11data[monid];
 
-	if (!d3d->texturelocked || d3d->invalidmode)
+	if (!d3d->texturelocked || d3d->invalidmode || !d3d->texture2dstaging) {
+		d3d->texturelocked = 0;
 		return;
+	}
 	d3d->texturelocked--;
 
 	d3d->m_deviceContext->Unmap(d3d->texture2dstaging, 0);
@@ -4994,14 +5145,11 @@ static void xD3D11_unlocktexture(int monid, int y_start, int y_end)
 		return;
 	}
 
-	bool rtg = WIN32GFX_IsPicassoScreen(mon);
-	if (((currprefs.leds_on_screen & STATUSLINE_CHIPSET) && !rtg) || ((currprefs.leds_on_screen & STATUSLINE_RTG) && rtg)) {
-		d3d->osd.enabled = true;
-		updateleds(d3d);
-	} else {
-		d3d->osd.enabled = false;
+	if (d3d->turbo_skip) {
+		return;
 	}
-	if (y_start < 0) {
+
+	if (y_start < 0 || y_end < 0) {
 		d3d->m_deviceContext->CopyResource(d3d->texture2d, d3d->texture2dstaging);
 	} else {
 		D3D11_BOX box = { 0 };
@@ -5021,7 +5169,7 @@ static void xD3D11_flushtexture(int monid, int miny, int maxy)
 static void xD3D11_restore(int monid, bool checkonly)
 {
 	struct d3d11struct *d3d = &d3d11data[monid];
-	recheck(d3d);
+	recheck(d3d, monid);
 }
 
 static void xD3D11_vblank_reset(double freq)
@@ -5044,7 +5192,7 @@ static void xD3D11_change(int monid, int temp)
 	clearcnt = 0;
 }
 
-static void resizemode(struct d3d11struct *d3d)
+static void resizemode(struct d3d11struct *d3d, int monid)
 {
 	d3d->resizeretry = false;
 	if (!d3d->invalidmode) {
@@ -5062,7 +5210,7 @@ static void resizemode(struct d3d11struct *d3d)
 			}
 		}
 		if (!d3d->invalidmode) {
-			if (!initd3d(d3d)) {
+			if (!initd3d(d3d, monid)) {
 				xD3D11_free(d3d->num, true);
 				gui_message(_T("D3D11 Resize failed."));
 				d3d->invalidmode = true;
@@ -5162,7 +5310,7 @@ static HDC xD3D_getDC(int monid, HDC hdc)
 	}
 }
 
-bool D3D11_capture(int monid, void **data, int *w, int *h, int *pitch, bool rendertarget)
+bool D3D11_capture(int monid, void **data, int *w, int *h, int *d, int *pitch, bool rendertarget)
 {
 	struct d3d11struct *d3d = &d3d11data[monid];
 	HRESULT hr;
@@ -5200,6 +5348,7 @@ bool D3D11_capture(int monid, void **data, int *w, int *h, int *pitch, bool rend
 			*pitch = map.RowPitch;
 			*w = desc.Width;
 			*h = desc.Height;
+			*d = d3d->hdr ? 36 : 24;
 			return true;
 		} else {
 			write_log(_T("Screenshot RenderTargetView->GetResource() failed\n"));
@@ -5208,9 +5357,69 @@ bool D3D11_capture(int monid, void **data, int *w, int *h, int *pitch, bool rend
 	return false;
 }
 
+static void updatecursorsurface(int monid)
+{
+	struct d3d11struct *d3d = &d3d11data[monid];
+	struct d3d11sprite *sp = &d3d->hwsprite;
+	int cx = (int)d3d->cursor_x;
+	int cy = (int)d3d->cursor_y;
+	int width = sp->width;
+	int height = sp->height;
+	int bw = d3d->m_bitmapWidth;
+	int bh = d3d->m_bitmapHeight;
+
+	if (sp->texture == NULL) {
+		return;
+	}
+
+	if (sp->updated && cx >= 0 && cy >= 0 && cx + width <= bw && cy + height <= bh) {
+		return;
+	}
+
+	sp->updated = false;
+	sp->empty = false;
+	D3D11_MAPPED_SUBRESOURCE map;
+	HRESULT hr = d3d->m_deviceContext->Map(sp->texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &map);
+	if (SUCCEEDED(hr)) {
+		int pitch = map.RowPitch;
+		uae_u8 *b = (uae_u8 *)map.pData;
+		uae_u8 *s = sp->texbuf;
+		for (int h = 0; h < sp->height; h++) {
+			int w = width;
+			int x = 0;
+			if (cx + w > bw) {
+				w -= (cx + w) - bw;
+			}
+			if (cx < 0) {
+				x = -cx;
+				w -= -cx;
+			}
+			if (w <= 0 || cy + h > bh) {
+				memset(b, 0, width * 4);
+			} else {
+				if (x > 0) {
+					memset(b, 0, x * 4);
+				}
+				memcpy(b + x * 4, s + x * 4, w * 4);
+				if (w < width) {
+					memset(b + w * 4, 0, (width - w) * 4);
+				}
+			}
+			b += pitch;
+			s += width * 4;
+		}
+		d3d->m_deviceContext->Unmap(d3d->hwsprite.texture, 0);
+
+		if (cx >= 0 && cy >= 0 && cx + width <= bw && cy + height <= bh) {
+			sp->updated = true;
+		}
+	}
+}
+
 static bool xD3D_setcursor(int monid, int x, int y, int width, int height, float mx, float my, bool visible, bool noscale)
 {
 	struct d3d11struct *d3d = &d3d11data[monid];
+	struct d3d11sprite *sp = &d3d->hwsprite;
 
 	//write_log(_T("setcursor %d %dx%d %dx%d %d %d\n"), monid, x, y, width, height, visible, noscale);
 
@@ -5232,37 +5441,39 @@ static bool xD3D_setcursor(int monid, int x, int y, int width, int height, float
 	float multx = d3d->xmult;
 	float multy = d3d->ymult;
 
-	setspritescaling(&d3d->hwsprite, mx * multx, my * multy);
+	setspritescaling(sp, mx * multx, my * multy);
 
-	d3d->hwsprite.x = d3d->cursor_x * multx + d3d->cursor_offset2_x * multx;
-	d3d->hwsprite.y = d3d->cursor_y * multy + d3d->cursor_offset2_y * multy;
+	sp->x = d3d->cursor_x * multx;
+	sp->y = d3d->cursor_y * multy;
+	sp->x += d3d->cursor_offset2_x * multx;
+	sp->y += d3d->cursor_offset2_y * multy;
 
 	//write_log(_T("-> %.1fx%.1f %.1f %.1f\n"), d3d->hwsprite.x, d3d->hwsprite.y, multx, multy);
 
 	d3d->cursor_v = visible;
-	d3d->hwsprite.enabled = visible;
-	d3d->hwsprite.bilinear = d3d->filterd3d->gfx_filter_bilinear;
+	sp->enabled = visible;
+	sp->bilinear = d3d->filterd3d->gfx_filter_bilinear;
+
+	updatecursorsurface(monid);
+
 	return true;
 }
 
-static uae_u8 *xD3D_setcursorsurface(int monid, int *pitch)
+static uae_u8 *xD3D_setcursorsurface(int monid, bool query, int *pitch)
 {
 	struct d3d11struct *d3d = &d3d11data[monid];
-	if (!d3d->hwsprite.texture)
-		return NULL;
-	if (pitch) {
-		D3D11_MAPPED_SUBRESOURCE map;
-		HRESULT hr = d3d->m_deviceContext->Map(d3d->hwsprite.texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &map);
-		if (FAILED(hr)) {
-			write_log(_T("HWSprite Map failed %08x\n"), hr);
-			return NULL;
-		}
-		*pitch = map.RowPitch;
-		return (uae_u8*)map.pData;
-	} else {
-		d3d->m_deviceContext->Unmap(d3d->hwsprite.texture, 0);
+	d3d->hwsprite.updated = false;
+	if (query) {
+		return d3d->hwsprite.empty ? NULL : d3d->hwsprite.texbuf;
+	}
+	if (!d3d->hwsprite.texbuf) {
 		return NULL;
 	}
+	if (pitch) {
+		*pitch = d3d->hwsprite.width * 4;
+		return d3d->hwsprite.texbuf;
+	}
+	return NULL;
 }
 
 static bool xD3D11_getscalerect(int monid, float *mx, float *my, float *sx, float *sy, int width, int height)
@@ -5296,14 +5507,14 @@ static bool xD3D11_run(int monid)
 
 	if (xD3D11_quit(d3d))
 		return false;
-	if (recheck(d3d))
+	if (recheck(d3d, monid))
 		return true;
-	return D3D11_resize_do(d3d);
+	return D3D11_resize_do(d3d, monid);
 }
 
-static bool xD3D11_extoverlay(struct extoverlay *ext)
+static bool xD3D11_extoverlay(struct extoverlay *ext, int monid)
 {
-	struct d3d11struct *d3d = &d3d11data[0];
+	struct d3d11struct *d3d = &d3d11data[monid];
 	struct d3doverlay *ov, *ovprev, *ov2;
 	struct d3d11sprite *s;
 	D3D11_MAPPED_SUBRESOURCE map;
@@ -5320,8 +5531,6 @@ static bool xD3D11_extoverlay(struct extoverlay *ext)
 		ovprev = ov;
 		ov = ov->next;
 	}
-
-	write_log(_T("extoverlay %d: x=%d y=%d %d*%d data=%p ovl=%p\n"), ext->idx, ext->xpos, ext->ypos, ext->width, ext->height, ext->data, ov);
 
 	if (!s && (ext->width <= 0 || ext->height <= 0))
 		return false;
@@ -5344,13 +5553,17 @@ static bool xD3D11_extoverlay(struct extoverlay *ext)
 			return true;
 	}
 
-	if (ext->width <= 0 || ext->height <= 0)
+	if (ext->width <= 0 || ext->height <= 0 || !d3d->m_device) {
 		return false;
+	}
 
 	ov = xcalloc(d3doverlay, 1);
+	if (!ov) {
+		return false;
+	}
 	s = &ov->s;
 
-	if (!allocsprite(d3d, s, ext->width, ext->height, true)) {
+	if (!allocsprite(d3d, s, ext->width, ext->height, true, false, false)) {
 		xfree(ov);
 		return false;
 	}
@@ -5380,8 +5593,24 @@ static bool xD3D11_extoverlay(struct extoverlay *ext)
 
 	hr = d3d->m_deviceContext->Map(s->texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &map);
 	if (SUCCEEDED(hr)) {
-		for (int y = 0; y < s->height; y++) {
-			memcpy((uae_u8*)map.pData + y * map.RowPitch, ext->data + y * ext->width * 4, ext->width * 4);
+		if (d3d->hdr) {
+			for (int y = 0; y < s->height; y++) {
+				uae_u32 *dp = (uae_u32*)((uae_u8 *)map.pData + y * map.RowPitch);
+				uae_u32 *sp = (uae_u32*)(ext->data + y * ext->width * 4);
+				for (int x = 0; x < s->width; x++) {
+					uae_u32 v = *sp++;
+					uae_u16 t = (v >> 24) * 10 / 7;
+					if (t > 255) {
+						t = 255;
+					}
+					*dp++ = (v & 0xffffff) | (t << 24);
+				}
+			}
+
+		} else {
+			for (int y = 0; y < s->height; y++) {
+				memcpy((uae_u8*)map.pData + y * map.RowPitch, ext->data + y * ext->width * 4, ext->width * 4);
+			}
 		}
 		d3d->m_deviceContext->Unmap(s->texture, 0);
 	}

@@ -27,10 +27,12 @@
 #include "cpuboard.h"
 #include "flashrom.h"
 #include "autoconf.h"
+#ifdef WITH_QEMU_CPU
 #include "qemuvga/qemuuaeglue.h"
 #include "qemuvga/queue.h"
 #include "qemuvga/scsi/scsi.h"
 #include "qemuvga/scsi/esp.h"
+#endif
 #include "gui.h"
 #include "devices.h"
 
@@ -1931,7 +1933,7 @@ static void ncr9x_reset_board(struct ncr9x_state *ncr)
 
 	device_add_rethink(ncr9x_rethink);
 	device_add_reset(ncr9x_reset);
-	device_add_exit(ncr9x_free);
+	device_add_exit(ncr9x_free, NULL);
 }
 
 void ncr_squirrel_init(struct romconfig *rc, uaecptr baseaddress)

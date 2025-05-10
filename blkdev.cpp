@@ -247,7 +247,11 @@ void blkdev_fix_prefs (struct uae_prefs *p)
 			continue;
 		if (p->cdslots[i].inuse || p->cdslots[i].name[0]) {
 			TCHAR *name = p->cdslots[i].name;
+#ifdef _WIN32
 			if (_tcslen (name) == 3 && name[1] == ':' && name[2] == '\\') {
+#else
+			if (name[0] == '/' && name[1] == 'd' && name[2] == 'e' && name[3] == 'v' && name[4] == '/') {
+#endif
 				if (currprefs.scsi && (currprefs.win32_uaescsimode == UAESCSI_SPTI || currprefs.win32_uaescsimode == UAESCSI_SPTISCAN))
 					cdscsidevicetype[i] = SCSI_UNIT_SPTI;
 				else
@@ -392,6 +396,7 @@ static int get_standard_cd_unit2 (struct uae_prefs *p, cd_standard_unit csu)
 		return unitnum;
 	}
 	device_func_init (SCSI_UNIT_IOCTL);
+#ifdef _WIN32
 	for (int drive = 'C'; drive <= 'Z'; ++drive) {
 		TCHAR vol[100];
 		_stprintf (vol, _T("%c:\\"), drive);
@@ -404,6 +409,7 @@ static int get_standard_cd_unit2 (struct uae_prefs *p, cd_standard_unit csu)
 			}
 		}
 	}
+#endif
 	if (isaudio) {
 		TCHAR vol[100];
 		_stprintf (vol, _T("%c:\\"), isaudio);
@@ -1886,7 +1892,7 @@ int scsi_cd_emulate (int unitnum, uae_u8 *cmdbuf, int scsi_cmd_len,
 					strack++;
 				}
 				addtocentry (&p2, &maxlen, 0xa2, 0xaa, msf, p, toc);				
-				int tlen = addrdiff(p2, p) + 2;
+				int tlen = addrdiff(p2, p + 2);
 				p[0] = tlen >> 8;
 				p[1] = tlen >> 0;
 				scsi_len = tlen + 2;
@@ -1982,11 +1988,10 @@ int scsi_cd_emulate (int unitnum, uae_u8 *cmdbuf, int scsi_cmd_len,
 			goto readerr;
 		struct cd_toc_head *toc = &ttoc;
 		if (strack < toc->first_track || strack > toc->last_track ||
-			etrack < toc->first_track || etrack > toc->last_track ||
-			strack > etrack)
+			etrack < toc->first_track || strack > etrack)
 			goto errreq;
 		int start = toc->toc[toc->first_track_offset + strack - 1].paddress;
-		int end = etrack == toc->last_track ? toc->lastaddress : toc->toc[toc->first_track_offset + etrack - 1 + 1].paddress;
+		int end = etrack >= toc->last_track ? toc->lastaddress : toc->toc[toc->first_track_offset + etrack - 1 + 1].paddress;
 		sys_command_cd_pause (unitnum, 0);
 		if (!sys_command_cd_play (unitnum, start, end, 0))
 			goto wrongtracktype;

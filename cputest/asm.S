@@ -26,6 +26,8 @@
 	.globl _cyclereg_address6
 	.globl _berrcopy
 	.globl _fpucomp
+	.globl _fpucompzero
+	.globl _initfpu
 
 | must match main.c
 S_DREG = 0
@@ -43,7 +45,8 @@ S_TRACESTACK = S_TRACECNT+4
 S_CYCLES = S_TRACESTACK+12
 S_CYCLES2 = S_CYCLES+4
 S_CYCLEST = S_CYCLES2+4
-S_FPU = S_CYCLEST+4
+S_BLTTEMP = S_CYCLEST+4
+S_FPU = S_BLTTEMP+4
 S_FPIAR = S_FPU+8*12
 S_FPCR = S_FPIAR+4
 S_FPSR = S_FPCR+4
@@ -52,17 +55,41 @@ S_NEXT = S_FSAVE+216
 
 asm_start:
 
+_initfpu:
+	move.l 4(sp),d0
+	fmove.l d0,fpcr
+	rts
+
+
+	| v1, v2, limit
+	| abs(v2 - v1) > limit
+_fpucompzero:
+	move.l 4(sp),a0
+	fmovem.x (a0),fp0-fp2
+	fmove.x fp0,fp3
+	fsub.x fp1,fp3
+	fabs.x fp3
+	moveq #1,d0
+	fcmp.x fp3,fp2
+	fbge .larger0
+	moveq #0,d0
+.larger0:
+	rts
+
+
 	| v1, v2, limit
 	| abs((v2 - v1) / v1) > limit
 _fpucomp:
 	move.l 4(sp),a0
 	fmovem.x (a0),fp0-fp2
-	fsub.x fp0,fp1
-	fdiv.x fp0,fp1
-	fabs.x fp1
+	fmove.x fp0,fp3
+	fsub.x fp1,fp3
+	fmove.x fp3,fp4
+	fabs.x fp4
+	fdiv.x fp0,fp4
 	moveq #1,d0
-	fcmp.x fp1,fp2
-	fbgt .larger
+	fcmp.x fp4,fp2
+	fbge .larger
 	moveq #0,d0
 .larger:
 	rts
@@ -202,6 +229,7 @@ _execute_test000:
 	move.w S_SR+2(a0),-(sp)
 	move.l S_AREG+7*4(a0),a1
 	move.l a1,USP
+	move.l S_BLTTEMP(a0),a1
 	bsr sync
 	move.l d0,S_CYCLES2(a0)
 	movem.l (a0),d0-d7/a0-a6
@@ -292,6 +320,7 @@ exception_trace000:
 	move.w sr,-(sp)
 _cyclereg_address3:
 	move.w CYCLEREG,cycles+4
+	| pop SR and bsr.s exception_trace000
 	addq.l #2+4,sp
 	move.l a0,-(sp)
 	move.l datapointer(pc),a0
@@ -364,16 +393,25 @@ _cyclereg_address4:
 	bcs.s .okpc
 	cmp.l #asm_end,2+4+2(sp)
 	bhi.s .okpc
-	| interrupt?
-	cmp.l #_exceptiontable000+24*2,2(sp)
-	bcs.s .okpc
-	cmp.l #_exceptiontable000+(24+8)*2,2(sp)
-	bcc.s .okpc
-	| possibly IPL tester spurious interrupt
-	| ignore it. Mark cycle count as invalid.
 #ifdef AMIGA
-	move.w #0x0800,0xdff09c
+	move.w #0x7fff,0xdff09c
 #endif
+	| Interrupt exception interrupted trace?
+	cmp.l #_exceptiontable000+(9-2)*2,2+4+2(sp)
+	bne.s .notokpc
+	| Store trace, copy trace PC/SR to interrupt PC/SR
+	move.l a0,-(sp)
+	move.l datapointer(pc),a0
+	move.l 4+2+6+4+0(sp),S_TRACESTACK(a0)
+	move.l 4+2+6+4+4(sp),S_TRACESTACK+4(a0)
+	| set exception PC and SR same as Trace
+	move.w 4+2+6+4+0(sp),4+2+4+0(sp)
+	move.l 4+2+6+4+2(sp),4+2+4+2(sp)
+	addq.l #1,S_TRACECNT(a0)
+	move.l (sp)+,a0
+	bra.s .okpc
+.notokpc:
+	| Mark cycle count as invalid.
 	move.l #0xffffffff,cycles
 	addq.l #2+4,sp
 	rte
@@ -404,7 +442,7 @@ _cyclereg_address4:
 	cmp.w #24+8,d0
 	bcc.s .nointerrupt
 #ifdef AMIGA
-	move.w #0x0800,0xdff09c
+	move.w #0x7fff,0xdff09c
 #endif
 .nointerrupt:
 

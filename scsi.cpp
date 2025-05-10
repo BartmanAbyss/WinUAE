@@ -188,11 +188,11 @@ bool scsi_emulate_analyze (struct scsi_data *sd)
 		data_len = 4;
 		break;
 	case 0x28: // READ(10)
-		data_len2 = ((sd->cmd[7] << 8) | (sd->cmd[8] << 0)) * (uae_s64)sd->blocksize;
+		data_len2 = ((sd->cmd[7] << 8) | (sd->cmd[8] << 0)) * sd->blocksize;
 		scsi_grow_buffer(sd, data_len2);
 	break;
 	case 0xa8: // READ(12)
-		data_len2 = ((sd->cmd[6] << 24) | (sd->cmd[7] << 16) | (sd->cmd[8] << 8) | (sd->cmd[9] << 0)) * (uae_s64)sd->blocksize;
+		data_len2 = ((sd->cmd[6] << 24) | (sd->cmd[7] << 16) | (sd->cmd[8] << 8) | (sd->cmd[9] << 0)) * sd->blocksize;
 		scsi_grow_buffer(sd, data_len2);
 	break;
 	case 0x0f: // WRITE SECTOR BUFFER
@@ -208,13 +208,13 @@ bool scsi_emulate_analyze (struct scsi_data *sd)
 	case 0x2a: // WRITE(10)
 		if (sd->device_type == UAEDEV_CD)
 			goto nocmd;
-		data_len = ((sd->cmd[7] << 8) | (sd->cmd[8] << 0)) * (uae_s64)sd->blocksize;
+		data_len = ((sd->cmd[7] << 8) | (sd->cmd[8] << 0)) * sd->blocksize;
 		scsi_grow_buffer(sd, data_len);
 	break;
 	case 0xaa: // WRITE(12)
 		if (sd->device_type == UAEDEV_CD)
 			goto nocmd;
-		data_len = ((sd->cmd[6] << 24) | (sd->cmd[7] << 16) | (sd->cmd[8] << 8) | (sd->cmd[9] << 0)) * (uae_s64)sd->blocksize;
+		data_len = ((sd->cmd[6] << 24) | (sd->cmd[7] << 16) | (sd->cmd[8] << 8) | (sd->cmd[9] << 0)) * sd->blocksize;
 		scsi_grow_buffer(sd, data_len);
 	break;
 	case 0xbe: // READ CD
@@ -230,7 +230,7 @@ bool scsi_emulate_analyze (struct scsi_data *sd)
 	break;
 	case 0x2f: // VERIFY
 		if (sd->cmd[1] & 2) {
-			sd->data_len = ((sd->cmd[7] << 8) | (sd->cmd[8] << 0)) * (uae_s64)sd->blocksize;
+			sd->data_len = ((sd->cmd[7] << 8) | (sd->cmd[8] << 0)) * sd->blocksize;
 			scsi_grow_buffer(sd, sd->data_len);
 			sd->direction = 1;
 		} else {
@@ -238,6 +238,15 @@ bool scsi_emulate_analyze (struct scsi_data *sd)
 			sd->direction = 0;
 		}
 		return true;
+	case 0x15: // MODE SELECT (6)
+	case 0x55: // MODE SELECT (10)
+		if (cmd_len == 6) {
+			data_len = sd->cmd[4];
+		} else {
+			data_len = (sd->cmd[7] << 8) | sd->cmd[8];
+		}
+		scsi_grow_buffer(sd, data_len);
+	break;
 	}
 	if (data_len < 0) {
 		if (cmd_len == 6) {
@@ -4327,7 +4336,7 @@ static struct soft_scsi *getscsi(struct romconfig *rc)
 {
 	device_add_rethink(ncr80_rethink);
 	device_add_reset(soft_scsi_reset);
-	device_add_exit(soft_scsi_free);
+	device_add_exit(soft_scsi_free, NULL);
 	if (rc->unitdata)
 		return (struct soft_scsi *)rc->unitdata;
 	return NULL;
@@ -5682,6 +5691,8 @@ void overdrive_add_scsi_unit(int ch, struct uaedev_config_info *ci, struct romco
 	generic_soft_scsi_add(ch, ci, rc, NCR5380_OVERDRIVE, 65536, 32768, ROMTYPE_OVERDRIVE);
 }
 
+#ifdef WITH_X86
+
 // x86 bridge scsi rancho rt1000
 void x86_rt1000_bput(int portnum, uae_u8 v)
 {
@@ -5735,3 +5746,5 @@ void x86_rt1000_add_unit(int ch, struct uaedev_config_info *ci, struct romconfig
 {
 	generic_soft_scsi_add(ch, ci, rc, NCR5380_X86_RT1000, 0, 0, ROMTYPE_X86_RT1000);
 }
+
+#endif // WITH_X86

@@ -67,9 +67,12 @@ FILE *debugfile = NULL;
 int console_logging = 0;
 static int debugger_type = -1;
 extern BOOL debuggerinitializing;
-extern int lof_store;
+extern bool lof_store;
 static int console_input_linemode = -1;
 int always_flush_log = 0;
+TCHAR *conlogfile = NULL;
+static FILE *conlogfilehandle;
+static HWND previousactivewindow;
 
 #define WRITE_LOG_BUF_SIZE 4096
 
@@ -132,15 +135,33 @@ static void flushmsgpump(void)
 	}
 }
 
-void activate_console (void)
+void deactivate_console(void)
 {
-	if (!consoleopen)
+	if (previousactivewindow) {
+		SetForegroundWindow(previousactivewindow);
+		previousactivewindow = NULL;
+	}
+}
+
+void activate_console(void)
+{
+	if (!consoleopen) {
+		previousactivewindow = NULL;
 		return;
-	SetForegroundWindow (GetConsoleWindow ());
+	}
+	HWND w = GetForegroundWindow();
+	HWND cw = GetConsoleWindow();
+	if (cw != w) {
+		previousactivewindow = w;
+	}
+	SetForegroundWindow(cw);
 }
 
 static void open_console_window (void)
 {
+	if (!consoleopen) {
+		previousactivewindow = GetForegroundWindow();
+	}
 	AllocConsole ();
 	getconsole ();
 	consoleopen = -1;
@@ -193,6 +214,13 @@ void debugger_change (int mode)
 		debugger_type = 2;
 	regsetint (NULL, _T("DebuggerType"), debugger_type);
 	openconsole ();
+}
+
+void open_console(void)
+{
+	if (!consoleopen) {
+		openconsole();
+	}
 }
 
 void reopen_console (void)
@@ -361,9 +389,18 @@ static void console_put (const TCHAR *buffer)
 	if (console_buffer) {
 		if (_tcslen (console_buffer) + _tcslen (buffer) < console_buffer_size)
 			_tcscat (console_buffer, buffer);
-	} else {
+	} else if (consoleopen) {
 		openconsole ();
 		writeconsole (buffer);
+	}
+	if (conlogfile) {
+		if (!conlogfilehandle) {
+			conlogfilehandle = _tfopen(conlogfile, _T("w"));
+		}
+		if (conlogfilehandle) {
+			fputws(buffer, conlogfilehandle);
+			fflush(conlogfilehandle);
+		}
 	}
 }
 
@@ -527,7 +564,7 @@ TCHAR *write_log_get_ts(void)
 	_stprintf (p, _T("%03d"), tb.millitm);
 	p += _tcslen (p);
 	if (vsync_counter != 0xffffffff)
-		_stprintf (p, _T(" [%d %03d%s%03d]"), vsync_counter, current_hpos_safe (), lof_store ? _T("-") : _T("="), vpos);
+		_stprintf (p, _T(" [%d %03d%s%03d/%03d]"), vsync_counter, current_hpos_safe(), lof_store ? _T("-") : _T("="), vpos, linear_vpos);
 	_tcscat (p, _T(": "));
 	return out;
 }
@@ -621,7 +658,7 @@ void write_logx(const TCHAR *format, ...)
 		break;
 	}
 	bufp[bufsize - 1] = 0;
-	if (1) {
+	if (consoleopen) {
 		writeconsole (bufp);
 	}
 	if (debugfile) {
@@ -723,7 +760,7 @@ void f_out (void *f, const TCHAR *format, ...)
 	va_list parms;
 	va_start (parms, format);
 
-	if (f == NULL)
+	if (f == NULL || !consoleopen)
 		return;
 	count = _vsntprintf (buffer, WRITE_LOG_BUF_SIZE - 1, format, parms);
 	openconsole ();

@@ -157,6 +157,7 @@ static int statuscnt;
 uae_u16 paula_sndbuffer[SND_MAX_BUFFER];
 uae_u16 *paula_sndbufpt;
 int paula_sndbufsize;
+int active_sound_stereo;
 
 static uae_sem_t sound_sem, sound_init_sem;
 
@@ -520,6 +521,9 @@ void set_volume_sound_device (struct sound_data *sd, int volume, int mute)
 {
 	struct sound_dp *s = sd->data;
 	HRESULT hr;
+	if (!s) {
+		return;
+	}
 	if (sd->devicetype == SOUND_DEVICE_AL) {
 		float vol = 0.0f;
 		if (volume < 100.0f && !mute)
@@ -569,10 +573,10 @@ void set_volume_sound_device (struct sound_data *sd, int volume, int mute)
 
 }
 
-void set_volume (int volume, int mute)
+void set_volume(int volume, int mute)
 {
-	set_volume_sound_device (sdp, volume, mute);
-	setvolume_ahi (volume);
+	set_volume_sound_device(sdp, volume, mute);
+	setvolume_ahi(volume);
 	config_changed = 1;
 }
 
@@ -1099,6 +1103,8 @@ public:
 			return S_OK;
 		if (flow != eConsole && flow != eMultimedia)
 			return S_OK;
+		if (!s)
+			return S_OK;
 		if (s->devicetype == SOUND_DEVICE_WASAPI_EXCLUSIVE) {
 			write_log(_T("WASAPI EX OnDefaultDeviceChanged '%s'\n"), pwstrDeviceId);
 			return S_OK;
@@ -1110,9 +1116,14 @@ public:
 		// default wasapi device selected?
 		if (sound_devices[s->index]->alname != NULL)
 			return S_OK;
-		if (!_tcscmp(current, pwstrDeviceId))
-			return S_OK;
-		_tcscpy(current, pwstrDeviceId);
+		if (pwstrDeviceId) {
+			if (!_tcscmp(current, pwstrDeviceId))
+				return S_OK;
+		} else {
+			if (!current[0])
+				return S_OK;
+		}
+		_tcscpy(current, pwstrDeviceId ? pwstrDeviceId : _T(""));
 		write_log(_T("WASAPI OnDefaultDeviceChanged '%s'\n"), current);
 		set_reset(s);
 		return S_OK;
@@ -1127,6 +1138,8 @@ public:
 	}
 	HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR pwstrDeviceId, DWORD dwNewState)
 	{
+		if (!s)
+			return S_OK;
 		if (s->devicetype == SOUND_DEVICE_WASAPI_EXCLUSIVE || s->devicetype == SOUND_DEVICE_WASAPI) {
 			;// write_log(_T("WASAPI OnDeviceStateChanged '%s' %08x\n"), pwstrDeviceId, dwNewState);
 		}
@@ -1134,6 +1147,8 @@ public:
 	}
 	HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR pwstrDeviceId, const PROPERTYKEY key)
 	{
+		if (!s)
+			return S_OK;
 		if (s->devicetype == SOUND_DEVICE_WASAPI_EXCLUSIVE || s->devicetype == SOUND_DEVICE_WASAPI) {
 			;// write_log(_T("WASAPI OnPropertyValueChanged '%s'\n"), pwstrDeviceId);
 		}
@@ -1291,7 +1306,7 @@ static int open_audio_wasapi (struct sound_data *sd, int index, int exclusive)
 	WAVEFORMATEX *pwfx = NULL;
 	WAVEFORMATEX *pwfx_saved = NULL;
 	WAVEFORMATEXTENSIBLE wavfmt;
-	int final;
+	int final, startchannel, chrounds;
 	LPWSTR name = NULL;
 	int rn[4], rncnt;
 	AUDCLNT_SHAREMODE sharemode;
@@ -1303,6 +1318,8 @@ static int open_audio_wasapi (struct sound_data *sd, int index, int exclusive)
 	UINT32  RequestedDuration;
 	UINT32 DefaultDevicePeriod;
 
+	startchannel = sd->channels;
+	chrounds = 0;
 retry:
 	sd->devicetype = exclusive ? SOUND_DEVICE_WASAPI_EXCLUSIVE : SOUND_DEVICE_WASAPI;
 	s->wasapiexclusive = exclusive;
@@ -1376,13 +1393,17 @@ retry:
 	rncnt = 0;
 	for (;;) {
 
-		if (sd->channels == 6) {
-			rn[0] = KSAUDIO_SPEAKER_5POINT1;
-			rn[1] = KSAUDIO_SPEAKER_5POINT1_SURROUND;
+		if (sd->channels == 8) {
+			rn[0] = KSAUDIO_SPEAKER_7POINT1_SURROUND;
+			rn[1] = KSAUDIO_SPEAKER_7POINT1;
+			rn[2] = 0;
+		} else if (sd->channels == 6) {
+			rn[0] = KSAUDIO_SPEAKER_5POINT1_SURROUND;
+			rn[1] = KSAUDIO_SPEAKER_5POINT1;
 			rn[2] = 0;
 		} else if (sd->channels == 4) {
-			rn[0] = KSAUDIO_SPEAKER_QUAD;
-			rn[1] = KSAUDIO_SPEAKER_QUAD_SURROUND;
+			rn[0] = KSAUDIO_SPEAKER_QUAD_SURROUND;
+			rn[1] = KSAUDIO_SPEAKER_QUAD;
 			rn[2] = KSAUDIO_SPEAKER_SURROUND;
 			rn[3] = 0;
 		} else if (sd->channels == 2) {
@@ -1432,16 +1453,27 @@ retry:
 		if (final)
 			goto error;
 		rncnt = 0;
+		bool skip = false;
+		if (sd->channels == 1 || sd->channels == 2) {
+			sd->channels = 8;
+		} else if (sd->channels == 4) {
+			sd->channels = 2;
+		} else if (sd->channels == 8) {
+			sd->channels = 6;
+		} else {
+			skip = true;
+		}
+		chrounds++;
+		if (chrounds < 10 && !skip && sd->channels != startchannel) {
+			continue;
+		}
+		chrounds = 0;
 		if (sd->freq < 44100) {
 			sd->freq = 44100;
 			continue;
 		}
 		if (sd->freq < 48000) {
 			sd->freq = 48000;
-			continue;
-		}
-		if (sd->channels != 2) {
-			sd->channels = 2;
 			continue;
 		}
 		final = 1;
@@ -1946,24 +1978,25 @@ static int open_sound (void)
 	size &= ~63;
 
 	sdp->softvolume = -1;
-	num = enumerate_sound_devices ();
+	num = enumerate_sound_devices();
 	if (currprefs.win32_soundcard >= num)
 		currprefs.win32_soundcard = changed_prefs.win32_soundcard = 0;
 	if (num == 0)
 		return 0;
-	ch = get_audio_nativechannels (currprefs.sound_stereo);
+	ch = get_audio_nativechannels(active_sound_stereo);
 	ret = open_sound_device (sdp, currprefs.win32_soundcard, size, currprefs.sound_freq, ch);
 	if (!ret)
 		return 0;
 	currprefs.sound_freq = changed_prefs.sound_freq = sdp->freq;
-	if (ch != sdp->channels)
-		currprefs.sound_stereo = changed_prefs.sound_stereo = get_audio_stereomode (sdp->channels);
+	if (ch != sdp->channels) {
+		active_sound_stereo = get_audio_stereomode (sdp->channels);
+	}
 
 	set_volume (currprefs.sound_volume_master, sdp->mute);
-	if (get_audio_amigachannels (currprefs.sound_stereo) == 4)
+	if (get_audio_amigachannels(active_sound_stereo) == 4)
 		sample_handler = sample16ss_handler;
 	else
-		sample_handler = get_audio_ismono (currprefs.sound_stereo) ? sample16_handler : sample16s_handler;
+		sample_handler = get_audio_ismono(active_sound_stereo) ? sample16_handler : sample16s_handler;
 
 	sdp->obtainedfreq = currprefs.sound_freq;
 
@@ -2783,9 +2816,9 @@ void finish_sound_buffer (void)
 		return;
 	}
 	if (currprefs.sound_stereo_swap_paula) {
-		if (get_audio_nativechannels (currprefs.sound_stereo) == 2 || get_audio_nativechannels (currprefs.sound_stereo) == 4)
+		if (get_audio_nativechannels(active_sound_stereo) == 2 || get_audio_nativechannels(active_sound_stereo) == 4)
 			channelswap((uae_s16*)paula_sndbuffer, bufsize / 2);
-		else if (get_audio_nativechannels (currprefs.sound_stereo) == 6)
+		else if (get_audio_nativechannels(active_sound_stereo) >= 6)
 			channelswap6((uae_s16*)paula_sndbuffer, bufsize / 2);
 	}
 #ifdef DRIVESOUND

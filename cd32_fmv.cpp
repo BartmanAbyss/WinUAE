@@ -26,6 +26,7 @@
 
 #include "cda_play.h"
 #include "archivers/mp2/kjmp2.h"
+
 #include "mpeg2.h"
 #include "mpeg2convert.h"
 
@@ -839,7 +840,7 @@ static void cl450_parse_frame(void)
 			}
 			break;
 			case STATE_SEQUENCE:
-				cl450_frame_pixbytes = currprefs.color_mode != 5 ? 2 : 4;
+				cl450_frame_pixbytes = 4;
 				mpeg2_convert(mpeg_decoder, cl450_frame_pixbytes == 2 ? mpeg2convert_rgb16 : mpeg2convert_rgb32, NULL);
 				cl450_set_status(CL_INT_SEQ_V);
 				cl450_frame_rate = mpeg_info->sequence->frame_period ? 27000000 / mpeg_info->sequence->frame_period : 0;
@@ -1585,8 +1586,9 @@ addrbank *cd32_fmv_init (struct autoconfig_info *aci)
 
 	device_add_hsync(cd32_fmv_hsync_handler);
 	device_add_vsync_pre(cd32_fmv_vsync_handler);
-	device_add_exit(cd32_fmv_free);
+	device_add_exit(cd32_fmv_free, NULL);
 	device_add_rethink(rethink_cd32fmv);
 
 	return &fmv_rom_bank;
 }
+

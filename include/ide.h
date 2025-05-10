@@ -33,6 +33,8 @@ typedef void (*hsync_func)(struct ide_board*);
 struct ide_board
 {
 	uae_u8 *rom;
+	void *flashrom;
+	struct zfile *romfile;
 	uae_u8 acmemory[128];
 	int rom_size;
 	int rom_start;
@@ -46,7 +48,9 @@ struct ide_board
 	bool irq;
 	bool intena;
 	bool enabled;
+	bool hardreset;
 	bool intlev6;
+	bool flashenabled;
 	int state;
 	uae_u8 state2[8];
 	int type;
@@ -92,6 +96,7 @@ struct ide_hdf
 	uae_u8 multiple_mode;
 	int irq_delay;
 	int irq;
+	bool irq_inhibit;
 	bool irq_new;
 	int num;
 	int blocksize;

@@ -56,6 +56,9 @@
 #include "uaeipc.h"
 #include "xwin.h"
 #include "drawing.h"
+#ifdef WITH_MIDIEMU
+#include "midiemu.h"
+#endif
 #ifdef RETROPLATFORM
 #include "rp.h"
 #endif
@@ -366,6 +369,16 @@ static void DoSomeWeirdPrintingStuff (uae_char val)
 	}
 	if (prtbufbytes < PRTBUFSIZE) {
 		prtbuf[prtbufbytes++] = val;
+
+#ifdef RETROPLATFORM
+		if (rp_isprinter() &&
+			!currprefs.parallel_postscript_emulation &&
+			currprefs.parallel_matrix_emulation < PARALLEL_MATRIX_EPSON &&
+			(rp_isprinteropen() || prtbufbytes >= MIN_PRTBYTES)) {
+
+			flushprtbuf();
+		}
+#endif
 	} else {
 		flushprtbuf ();
 		*prtbuf = val;
@@ -488,10 +501,31 @@ void unload_ghostscript (void)
 	psmode = 0;
 }
 
+static DWORD GetPrinterDriverVersion(HANDLE handle)
+{
+	DWORD needed = 0;
+	DWORD version = 0;
+	GetPrinterDriver(handle, NULL, 2, NULL, 0, &needed);
+	if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+		return -1;
+	}
+	BYTE *buffer = xcalloc(BYTE, needed);
+	if (buffer) {
+		if (!GetPrinterDriver(handle, NULL, 2, buffer, needed, &needed)) {
+			xfree(buffer);
+			return -1;
+		}
+		version = ((DRIVER_INFO_2*)buffer)->cVersion;
+		xfree(buffer);
+	}
+	return version;
+}
+
 static void openprinter (void)
 {
 	DOC_INFO_1 DocInfo;
 	static int first;
+	DWORD error = 0;
 
 	closeprinter ();
 	if (!currprefs.prtname[0])
@@ -505,12 +539,14 @@ static void openprinter (void)
 	} else if (hPrt == INVALID_HANDLE_VALUE) {
 		flushprtbuf ();
 		if (OpenPrinter (currprefs.prtname, &hPrt, NULL)) {
+			DWORD version = GetPrinterDriverVersion(hPrt);
 			// Fill in the structure with info about this "document."
 			DocInfo.pDocName = _T("WinUAE Document");
 			DocInfo.pOutputFile = NULL;
-			DocInfo.pDatatype = (currprefs.parallel_matrix_emulation || currprefs.parallel_postscript_detection) ? _T("TEXT") : _T("RAW");
+			DocInfo.pDatatype = (currprefs.parallel_matrix_emulation || currprefs.parallel_postscript_detection) ? _T("TEXT") : (version >= 4 ? _T("XPS_PASS") : _T("RAW"));
 			// Inform the spooler the document is beginning.
 			if ((dwJob = StartDocPrinter (hPrt, 1, (LPBYTE)&DocInfo)) == 0) {
+				error = GetLastError();
 				ClosePrinter (hPrt );
 				hPrt = INVALID_HANDLE_VALUE;
 			} else if (StartPagePrinter (hPrt)) {
@@ -523,7 +559,7 @@ static void openprinter (void)
 	if (hPrt != INVALID_HANDLE_VALUE) {
 		write_log (_T("PRINTER: Opening printer \"%s\" with handle 0x%x.\n"), currprefs.prtname, hPrt);
 	} else if (*currprefs.prtname) {
-		write_log (_T("PRINTER: ERROR - Couldn't open printer \"%s\" for output.\n"), currprefs.prtname);
+		write_log (_T("PRINTER: ERROR - Couldn't open printer \"%s\" for output. Error %08x\n"), currprefs.prtname, error);
 	}
 }
 
@@ -896,7 +932,7 @@ static WSADATA wsadata;
 static SOCKET serialsocket = INVALID_SOCKET;
 static SOCKET serialconn = INVALID_SOCKET;
 static PADDRINFOW socketinfo;
-static char socketaddr[sizeof SOCKADDR_INET];
+static char socketaddr[sizeof(SOCKADDR_INET)];
 static BOOL tcpserial;
 
 static bool tcp_is_connected (void)
@@ -913,8 +949,11 @@ static bool tcp_is_connected (void)
 		fd.fd_count = 1;
 		if (select (1, &fd, NULL, NULL, &tv)) {
 			serialconn = accept (serialsocket, (struct sockaddr*)socketaddr, &sa_len);
-			if (serialconn != INVALID_SOCKET)
+			if (serialconn != INVALID_SOCKET) {
 				write_log (_T("SERIAL_TCP: connection accepted\n"));
+				int opt = 1;
+				setsockopt(serialsocket, IPPROTO_TCP, TCP_NODELAY, (char*)&opt, sizeof(int));
+			}
 		}
 	}
 	return serialconn != INVALID_SOCKET;
@@ -1007,6 +1046,7 @@ static int opentcp (const TCHAR *sername)
 		write_log(_T("SERIAL_TCP: setsockopt(SO_REUSEADDR) failed, %s:%s: %d\n"), name, port, WSAGetLastError ());
 		goto end;
 	}
+	setsockopt(serialsocket, IPPROTO_TCP, TCP_NODELAY, (char*)&one, sizeof(int));
 
 	if (waitmode) {
 		while (tcp_is_connected () == false) {
@@ -1132,6 +1172,11 @@ void closeser (void)
 		//is the same and do not open midi), so setting serper to different value helps
 		serper = 0x30;
 	}
+#ifdef WITH_MIDIEMU
+	if (midi_emu) {
+		midi_emu_close();
+	}
+#endif
 	if(writeevent)
 		CloseHandle(writeevent);
 	writeevent = 0;
@@ -1172,6 +1217,11 @@ void writeser (int c)
 				tcp_disconnect ();
 			}
 		}
+#ifdef WITH_MIDIEMU
+	} else if (midi_emu) {
+		uae_u8 b = (uae_u8)c;
+		midi_emu_parse(&b, 1);
+#endif
 	} else if (midi_ready) {
 		BYTE outchar = (BYTE)c;
 		Midi_Parse (midi_output, &outchar);
@@ -1374,10 +1424,19 @@ void setserstat (int mask, int onoff)
 	}
 }
 
-int setbaud (long baud)
+int setbaud(int baud, int org_baud)
 {
-	if(baud == 31400 && currprefs.win32_midioutdev >= -1) {
+	if(org_baud == 31400 && currprefs.win32_midioutdev >= -1) {
 		/* MIDI baud-rate */
+#ifdef WITH_MIDIEMU
+		if (currprefs.win32_midioutdev >= 0) {
+			TCHAR *name = midioutportinfo[currprefs.win32_midioutdev]->name;
+			if (!_tcsncmp(name, _T("Munt "), 5)) {
+				midi_emu_open(name);
+				return 1;
+			}
+		}
+#endif
 		if (!midi_ready) {
 			if (Midi_Open())
 				write_log (_T("Midi enabled\n"));
@@ -1387,6 +1446,11 @@ int setbaud (long baud)
 		if (midi_ready) {
 			Midi_Close();
 		}
+#ifdef WITH_MIDIEMU
+		if (midi_emu) {
+			midi_emu_close();
+		}
+#endif
 		if (!currprefs.use_serial)
 			return 1;
 		if (hCom != INVALID_HANDLE_VALUE)  {
@@ -1688,9 +1752,10 @@ int enummidiports (void)
 		midioutportinfo[i]->devid = i - 1;
 		write_log (_T("MIDI OUT: %d:'%s' (%d/%d)\n"), midioutportinfo[i]->devid, midioutportinfo[i]->name, midiOutCaps.wMid, midiOutCaps.wPid);
 	}
-	total = num + 1;
-	for (i = 1; i < num + 1; i++) {
-		for (j = i + 1; j < num + 1; j++) {
+	num++;
+	total = num;
+	for (i = 1; i < num; i++) {
+		for (j = i + 1; j < num; j++) {
 			if (_tcsicmp (midioutportinfo[i]->name, midioutportinfo[j]->name) > 0) {
 				struct midiportinfo *mi;
 				mi = midioutportinfo[i];
@@ -1699,6 +1764,18 @@ int enummidiports (void)
 			}
 		}
 	}
+#ifdef WITH_MIDIEMU
+	midioutportinfo[num] = xcalloc(struct midiportinfo, 1);
+	midioutportinfo[num]->label = midi_emu_available(_T("MT-32")) ? my_strdup(_T("Munt MT-32")) : my_strdup(_T("Munt MT-32 (Missing ROMs)"));
+	midioutportinfo[num]->name = my_strdup(_T("Munt MT-32"));
+	midioutportinfo[num]->devid = num;
+	num++;
+	midioutportinfo[num] = xcalloc(struct midiportinfo, 1);
+	midioutportinfo[num]->label = midi_emu_available(_T("CM-32L")) ? my_strdup(_T("Munt CM-32L")) : my_strdup(_T("Munt CM-32L (Missing ROMs)"));
+	midioutportinfo[num]->name = my_strdup(_T("Munt CM-32L"));
+	midioutportinfo[num]->devid = num;
+	num++;
+#endif
 	num = innum;
 	for (i = 0; i < num && i < MAX_MIDI_PORTS - 1; i++) {
 		if (midiInGetDevCaps (i, &midiInCaps, sizeof (midiInCaps)) != MMSYSERR_NOERROR) {

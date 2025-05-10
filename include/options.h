@@ -14,9 +14,9 @@
 
 #include "traps.h"
 
-#define UAEMAJOR 4
-#define UAEMINOR 10
-#define UAESUBREV 1
+#define UAEMAJOR 6
+#define UAEMINOR 0
+#define UAESUBREV 0
 
 #define MAX_AMIGADISPLAYS 4
 
@@ -64,17 +64,6 @@ struct strlist {
 
 #define INTERNALEVENT_COUNT 1
 
-#if 0
-struct uae_input_device_event
-{
-	uae_s16 eventid[MAX_INPUT_SUB_EVENT_ALL];
-	TCHAR *custom[MAX_INPUT_SUB_EVENT_ALL];
-	uae_u64 flags[MAX_INPUT_SUB_EVENT_ALL];
-	uae_u8 port[MAX_INPUT_SUB_EVENT_ALL];
-	uae_s16 extra;
-};
-#endif
-
 struct uae_input_device {
 	TCHAR *name;
 	TCHAR *configname;
@@ -99,12 +88,16 @@ struct inputdevconfig {
 	TCHAR configname[MAX_JPORT_CONFIG];
 	TCHAR shortid[16];
 };
-struct jport {
+struct jport_dev {
 	int id;
 	int mode; // 0=def,1=mouse,2=joy,3=anajoy,4=lightpen
 	int submode;
 	int autofire;
 	struct inputdevconfig idc;
+};
+#define MAX_JPORT_DEVS 8
+struct jport {
+	struct jport_dev jd[MAX_JPORT_DEVS];
 	bool nokeyboardoverride;
 	bool changed;
 };
@@ -114,6 +107,7 @@ struct jport {
 #define JPORT_AF_NORMAL 1
 #define JPORT_AF_TOGGLE 2
 #define JPORT_AF_ALWAYS 3
+#define JPORT_AF_TOGGLENOAF 4
 
 #define KBTYPE_AMIGA 0
 #define KBTYPE_PC1 1
@@ -177,7 +171,8 @@ struct wh {
 	int special;
 };
 
-#define MOUNT_CONFIG_SIZE 30
+#define MOUNT_CONFIG_SIZE 50
+#define MAX_FILESYSTEM_UNITS 50
 #define UAEDEV_DIR 0
 #define UAEDEV_HDF 1
 #define UAEDEV_CD 2
@@ -300,6 +295,26 @@ enum { CP_GENERIC = 1, CP_CDTV, CP_CDTVCR, CP_CD32, CP_A500, CP_A500P, CP_A600,
 #define OVERSCANMODE_EXTREME 5
 #define OVERSCANMODE_ULTRA 6
 
+#define AGNUSMODEL_AUTO 0
+#define AGNUSMODEL_VELVET 1
+#define AGNUSMODEL_A1000 2
+#define AGNUSMODEL_OCS 3
+#define AGNUSMODEL_ECS 4
+#define AGNUSMODEL_AGA 5
+
+#define AGNUSSIZE_AUTO 0
+#define AGNUSSIZE_512 1
+#define AGNUSSIZE_1M 2
+#define AGNUSSIZE_2M 3
+
+#define DENISEMODEL_AUTO 0
+#define DENISEMODEL_VELVET 1
+#define DENISEMODEL_A1000NOEHB 2
+#define DENISEMODEL_A1000 3
+#define DENISEMODEL_OCS 4
+#define DENISEMODEL_ECS 5
+#define DENISEMODEL_AGA 6
+
 #define MAX_FILTERSHADERS 4
 
 #define MAX_CHIPSET_REFRESH 10
@@ -382,6 +397,7 @@ struct gfx_filterdata
 	int gfx_filter_autoscale;
 	int gfx_filter_integerscalelimit;
 	int gfx_filter_keep_autoscale_aspect;
+	int gfx_filter_rotation;
 	bool changed;
 };
 
@@ -457,6 +473,7 @@ struct ramboard
 	bool nodma;
 	bool force16bit;
 	bool chipramtiming;
+	int fault;
 	struct boardloadfile lf;
 };
 struct expansion_params
@@ -478,6 +495,20 @@ struct monconfig
 	struct wh gfx_size_fs_xtra[GFX_SIZE_EXTRA_NUM];
 };
 
+#define KB_DISCONNECTED -1
+#define KB_UAE 0
+#define KB_A500_6570 1
+#define KB_A600_6570 2
+#define KB_A1000_6500 3
+#define KB_A1000_6570 4
+#define KB_A1200_6805 5
+#define KB_A2000_8039 6
+#define KB_Ax000_6570 7
+
+#define DISPLAY_OPTIMIZATIONS_FULL 0
+#define DISPLAY_OPTIMIZATIONS_PARTIAL 1
+#define DISPLAY_OPTIMIZATIONS_NONE 2
+
 struct uae_prefs {
 
 	struct strlist *all_lines;
@@ -492,12 +523,15 @@ struct uae_prefs {
 	TCHAR config_all_path[MAX_DPATH];
 	TCHAR config_path[MAX_DPATH];
 	TCHAR config_window_title[256];
+	int got_fs2_hdf2;
 
 	bool illegal_mem;
 	bool debug_mem;
 	bool use_serial;
 	bool serial_demand;
 	bool serial_hwctsrts;
+	bool serial_rtsctsdtrdtecd;
+	bool serial_ri;
 	bool serial_direct;
 	int serial_stopbits;
 	int serial_crlf;
@@ -552,6 +586,7 @@ struct uae_prefs {
 	bool comp_constjump;
 	bool comp_catchfault;
 	int cachesize;
+	bool cachesize_inhibit;
 	TCHAR jitblacklist[MAX_DPATH];
 	bool fpu_strict;
 	int fpu_mode;
@@ -577,7 +612,6 @@ struct uae_prefs {
 	int gfx_threebitcolors;
 	int gfx_api;
 	int gfx_api_options;
-	int color_mode;
 	int gfx_extrawidth;
 	int gfx_extraheight;
 	bool lightboost_strobo;
@@ -590,6 +624,8 @@ struct uae_prefs {
 	bool gfx_windowed_resize;
 	int gfx_overscanmode;
 	int gfx_monitorblankdelay;
+	int gfx_rotation;
+	uae_u32 gfx_bordercolor;
 
 	struct gfx_filterdata gf[3];
 
@@ -601,7 +637,9 @@ struct uae_prefs {
 	float blitter_speed_throttle;
 	unsigned int chipset_mask;
 	bool chipset_hr;
-	bool keyboard_connected;
+	bool display_calibration;
+	int keyboard_mode;
+	bool keyboard_nkro;
 	bool ntscmode;
 	bool genlock;
 	int genlock_image;
@@ -609,11 +647,13 @@ struct uae_prefs {
 	int genlock_scale;
 	int genlock_aspect;
 	int genlock_effects;
+	int genlock_offset_x, genlock_offset_y;
 	uae_u64 ecs_genlock_features_colorkey_mask[4];
 	uae_u8 ecs_genlock_features_plane_mask;
 	bool genlock_alpha;
 	TCHAR genlock_image_file[MAX_DPATH];
 	TCHAR genlock_video_file[MAX_DPATH];
+	TCHAR genlock_font[MAX_DPATH];
 	int monitoremu;
 	int monitoremu_mon;
 	float chipset_refreshrate;
@@ -650,6 +690,8 @@ struct uae_prefs {
 	bool rom_readwrite;
 	int turbo_emulation;
 	int turbo_emulation_limit;
+	bool turbo_boot;
+	int turbo_boot_delay;
 	bool headless;
 	int filesys_limit;
 	int filesys_max_name;
@@ -688,9 +730,6 @@ struct uae_prefs {
 	bool cs_cdtvcr;
 	bool cs_df0idhw;
 	bool cs_resetwarning;
-	bool cs_denisenoehb;
-	bool cs_dipagnus;
-	bool cs_agnusbltbusybug;
 	bool cs_ciatodbug;
 	bool cs_z3autoconfig;
 	bool cs_1mchipjumper;
@@ -707,7 +746,14 @@ struct uae_prefs {
 	int cs_hvcsync;
 	int cs_eclockphase;
 	int cs_eclocksync;
+	int cs_agnusmodel;
+	int cs_agnussize;
+	int cs_denisemodel;
 	bool cs_memorypatternfill;
+	bool cs_ipldelay;
+	bool cs_floppydatapullup;
+	uae_u32 seed;
+	int cs_optimizations;
 
 	struct boardromconfig expansionboard[MAX_EXPANSION_BOARDS];
 
@@ -732,6 +778,7 @@ struct uae_prefs {
 	struct cdslot cdslots[MAX_TOTAL_SCSI_DEVICES];
 	TCHAR quitstatefile[MAX_DPATH];
 	TCHAR statefile[MAX_DPATH];
+	TCHAR statefile_path[MAX_DPATH];
 	TCHAR inprecfile[MAX_DPATH];
 	TCHAR trainerfile[MAX_DPATH];
 	bool inprec_autoplay;
@@ -761,6 +808,7 @@ struct uae_prefs {
 	bool cpu_data_cache;
 	bool picasso96_nocustom;
 	int picasso96_modeflags;
+	bool picasso96_noautomodes;
 	int cpu_model_fallback;
 
 	uae_u32 z3autoconfig_start;
@@ -845,6 +893,7 @@ struct uae_prefs {
 	int win32_active_capture_priority;
 	bool win32_active_nocapture_pause;
 	bool win32_active_nocapture_nosound;
+	int win32_active_input;
 	int win32_inactive_priority;
 	bool win32_inactive_pause;
 	bool win32_inactive_nosound;
@@ -854,7 +903,6 @@ struct uae_prefs {
 	bool win32_iconified_nosound;
 	int win32_iconified_input;
 
-	bool win32_rtgmatchdepth;
 	bool win32_rtgallowscaling;
 	int win32_rtgscaleaspectratio;
 	int win32_rtgvblankrate;
@@ -884,6 +932,8 @@ struct uae_prefs {
 	bool win32_filesystem_mangle_reserved_names;
 	bool win32_shutdown_notification;
 	bool win32_warn_exit;
+	bool win32_gui_control;
+	bool win32_videograb_balance;
 	bool right_control_is_right_win_key;
 #ifdef WITH_SLIRP
 	struct slirp_redir slirp_redirs[MAX_SLIRP_REDIRS];
@@ -914,7 +964,10 @@ struct uae_prefs {
 	int input_mouse_untrap;
 	int input_magic_mouse_cursor;
 	int input_keyboard_type;
-	int input_autoswitch;
+	bool input_autoswitch;
+	bool input_autoswitchleftright;
+	bool input_advancedmultiinput;
+	bool input_default_onscreen_keyboard;
 	struct uae_input_device joystick_settings[MAX_INPUT_SETTINGS][MAX_INPUT_DEVICES];
 	struct uae_input_device mouse_settings[MAX_INPUT_SETTINGS][MAX_INPUT_DEVICES];
 	struct uae_input_device keyboard_settings[MAX_INPUT_SETTINGS][MAX_INPUT_DEVICES];
@@ -925,9 +978,9 @@ struct uae_prefs {
 	int input_device_match_mask;
 };
 
-extern int config_changed;
-extern void config_check_vsync (void);
-extern void set_config_changed (void);
+extern int config_changed, config_changed_flags;
+extern void config_check_vsync(void);
+extern void set_config_changed(int flags = 0);
 
 /* Contains the filename of .uaerc */
 extern TCHAR optionsfile[];
@@ -961,6 +1014,7 @@ extern bool is_error_log (void);
 extern void default_prefs (struct uae_prefs *, bool, int);
 extern void discard_prefs (struct uae_prefs *, int);
 extern void copy_prefs(struct uae_prefs *src, struct uae_prefs *dst);
+extern void copy_inputdevice_prefs(struct uae_prefs *src, struct uae_prefs *dst);
 
 int parse_cmdline_option (struct uae_prefs *, TCHAR, const TCHAR*);
 

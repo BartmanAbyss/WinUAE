@@ -3,7 +3,7 @@
 *
 * SanaII emulation
 *
-* partially based on code from 3c589 PCMCIA driver by Neil Cafferke
+* partially based on code from 3c589 PCMCIA driver by Neil Cafferkey
 *
 * Copyright 2007 Toni Wilen
 *
@@ -1687,8 +1687,8 @@ static int uaenet_int_handler2(TrapContext *ctx)
 					}
 					while (p) {
 						if (p->drop_start == 0)
-							p->drop_start = timeframes;
-						p->drop_count = timeframes;
+							p->drop_start = vsync_counter;
+						p->drop_count = vsync_counter;
 						p = p->next;
 					}
 					break;

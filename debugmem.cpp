@@ -352,10 +352,11 @@ static void debugreport(struct debugmemdata *dm, uaecptr addr, int rwi, int size
 		!(state & (DEBUGMEM_ALLOCATED | DEBUGMEM_INUSE)) ? 'I' : (state & DEBUGMEM_WRITE) ? 'W' : 'R',
 		(state & DEBUGMEM_WRITE) ? '*' : (state & DEBUGMEM_INITIALIZED) ? '+' : '-',
 		dm->unused_start, PAGE_SIZE - dm->unused_end - 1);
-
+#ifdef DEBUGGER
 	if (peekdma_data.mask && (peekdma_data.addr == addr || (size > 2 && peekdma_data.addr + 2 == addr))) {
 		console_out_f(_T("DMA DAT=%04x PTR=%04x\n"), peekdma_data.reg, peekdma_data.ptrreg);
 	}
+#endif
 
 	debugmem_break(1);
 }
@@ -915,6 +916,10 @@ static struct debugmemallocs *debugmem_allocate(uae_u32 size, uae_u32 flags, uae
 	struct debugmemallocs *dm = getallocblock();
 	if (!dm)
 		return NULL;
+	if (size >= totalmemdata) {
+		console_out_f(_T("debugmem allocation larger than free space! Alloc size %d (%08x), flags %08x\n"), size, size, flags);
+		return 0;
+	}
 	int offset = debugmemptr / PAGE_SIZE;
 	bool gotit = true;
 	int totalsize = 0;
@@ -947,7 +952,7 @@ static struct debugmemallocs *debugmem_allocate(uae_u32 size, uae_u32 flags, uae
 			break;
 	}
 	if (!gotit || !totalsize || !extrasize) {
-		console_out_f(_T("debugmem out of free space! Alloc size %d, flags %08x\n"), size, flags);
+		console_out_f(_T("debugmem out of free space! Alloc size %d (%08x), flags %08x\n"), size, size, flags);
 		return 0;
 	}
 	dm->parentid = parentid;
@@ -1072,8 +1077,10 @@ void debugmem_trap(uaecptr stack)
 	}
 	console_out_f(_T("\n"));
 	// always return back to faulted instruction
+#ifdef DEBUGGER
 	put_long(stack + 6, regs.instruction_pc_user_exception);
 	debugmem_break_pc(13, regs.instruction_pc_user_exception, 2);
+#endif
 }
 
 static struct debugmemallocs *debugmem_reserve(uaecptr addr, uae_u32 size, uae_u32 parentid)
@@ -1571,16 +1578,19 @@ static uae_u8 *loadhunkfile(uae_u8 *file, int filelen, uae_u32 seglist, int segm
 			}
 			outsize += hunklens[hunkindex];
 
-			if (gl(p) == 0x3ec) { // reloc
+			if (gl(p) == 0x3ec || gl(p) == 0x3f7) { // reloc
 
+				bool shortrel = gl(p) == 0x3f7;
+				int reladd = shortrel ? 2 : 4;
+				uae_u8 *po = p;
 				p += 4;
 				for (;;) {
-					int reloccnt = gl(p);
-					p += 4;
+					int reloccnt = shortrel ? gw(p) : gl(p);
+					p += reladd;
 					if (!reloccnt)
 						break;
-					int relochunk = gl(p);
-					p += 4;
+					int relochunk = shortrel ? gw(p) : gl(p);
+					p += reladd;
 					if (relochunk > last) {
 						xfree(hunkoffsets);
 						xfree(hunklens);
@@ -1590,13 +1600,16 @@ static uae_u8 *loadhunkfile(uae_u8 *file, int filelen, uae_u32 seglist, int segm
 					uaecptr hunkptr = hunkoffsets[relochunk] + relocate_base;
 					uae_u8 *currenthunk = out + hunkoffsets[relochunk];
 					for (int j = 0; j < reloccnt; j++) {
-						uae_u32 reloc = gl(p);
-						p += 4;
+						uae_u32 reloc = shortrel ? gw(p) : gl(p);
+						p += reladd;
 						if (reloc >= outsize - 3) {
 							return 0;
 						}
 						put_long_host(currenthunk + reloc, get_long_host(currenthunk + reloc) + hunkptr);
 					}
+				}
+				if ((p - po) & 2) {
+					p += 2;
 				}
 			}
 			continue;
@@ -1722,19 +1735,22 @@ static uaecptr loaddebugmemhunkfile(uae_u8 *p, uae_u32 len, uae_u32 *parentidp)
 				put_long_host(lastptr, memaddr / 4 + 1);
 			}
 			lastptr = mem + 4;
-			if (gl(p) == 0x3ec) { // hunk reloc
+			if (gl(p) == 0x3ec || gl(p) == 0x3f7) { // hunk reloc
+				bool shortrel = gl(p) == 0x3f7;
+				int reladd = shortrel ? 2 : 4;
+				uae_u8 *po = p;
 				if (hunktype == 0x3eb) {
 					console_out_f(_T("HUNK_BSS with HUNK_RELOC32!\n"));
 					return 0;
 				}
 				p += 4;
 				for (;;) {
-					int reloccnt = gl(p);
-					p += 4;
+					int reloccnt = shortrel ? gw(p) : gl(p);
+					p += reladd;
 					if (!reloccnt)
 						break;
-					int relochunk = gl(p);
-					p += 4;
+					int relochunk = shortrel ? gw(p) : gl(p);
+					p += reladd;
 					if (relochunk > last) {
 						console_out_f(_T("HUNK_RELOC hunk #%d is larger than last hunk (%d)!\n"), relochunk, last);
 						return 0;
@@ -1742,14 +1758,17 @@ static uaecptr loaddebugmemhunkfile(uae_u8 *p, uae_u32 len, uae_u32 *parentidp)
 					uaecptr hunkptr = hunks[relochunk]->start + debugmem_bank.start + 8;
 					uae_u8 *currenthunk = mem + 8;
 					for (int j = 0; j < reloccnt; j++) {
-						uae_u32 reloc = gl(p);
-						p += 4;
+						uae_u32 reloc = shortrel ? gw(p) : gl(p);
+						p += reladd;
 						if (reloc >= len - 3) {
 							console_out_f(_T("HUNK_RELOC hunk #%d offset %d larger than hunk lenght %d!\n"), hunkcnt, reloc, len);
 							return 0;
 						}
 						put_long_host(currenthunk + reloc, get_long_host(currenthunk + reloc) + hunkptr);
 					}
+				}
+				if ((p - po) & 2) {
+					p += 2;
 				}
 			}
 			continue;
@@ -1894,10 +1913,10 @@ uaecptr debugmem_reloc(uaecptr exeaddress, uae_u32 len, uaecptr dbgaddress, uae_
 	}
 
 	console_out_f(_T("Executable load complete.\n"));
-
+#ifdef DEBUGGER
 	uaecptr execbase = get_long_debug(4);
 	exec_thistask = get_real_address(execbase + 276);
-
+#endif
 	setchipbank(true);
 	chipmem_setindirect();
 	debugger_scan_libraries();
@@ -1918,6 +1937,7 @@ static uae_char *gethunktext(uae_u8 *p, uae_char *namebuf, int len)
 
 static void scan_library_list(uaecptr v, int *cntp)
 {
+#ifdef DEBUGGER
 	while ((v = get_long_debug(v))) {
 		uae_u32 v2;
 		uae_u8 *p;
@@ -1959,10 +1979,12 @@ static void scan_library_list(uaecptr v, int *cntp)
 			//console_out_f(_T("%08x = '%s'\n"), found->base, found->name);
 		}
 	}
+#endif
 }
 
 void debugger_scan_libraries(void)
 {
+#ifdef DEBUGGER
 	if (!libnamecnt)
 		return;
 	uaecptr v = get_long_debug(4);
@@ -1974,6 +1996,7 @@ void debugger_scan_libraries(void)
 	scan_library_list(v + 350, &cnt);
 	scan_library_list(v + 336, &cnt);
 	console_out_f(_T("%d libraries matched with library symbols.\n"), cnt);
+#endif
 }
 
 
@@ -3591,8 +3614,10 @@ bool debugmem_get_symbol_value(const TCHAR *name, uae_u32 *valp)
 					if (!_tcsicmp(name + lnlen + 1, lvo->name)) {
 						uaecptr addr = libname->base + lvo->value;
 						// JMP xxxxxxxx?
+#ifdef DEBUGGER
 						if (get_word_debug(addr) == 0x4ef9)
 							addr = get_long_debug(addr + 2);
+#endif
 						*valp = addr;
 						return true;
 					}
@@ -3901,8 +3926,10 @@ uae_u32 debugmem_chiphit(uaecptr addr, uae_u32 v, int size)
 		}
 	}
 	if (debugmem_active && debugmem_mapped) {
+#ifdef DEBUGGER
 		if (!dbg)
 			m68k_dumpstate(0, 0xffffffff);
+#endif
 	}
 	recursive--;
 	return 0xdeadf00d;
@@ -3926,8 +3953,10 @@ bool debugmem_extinvalidmem(uaecptr addr, uae_u32 v, int size)
 		console_out_f(_T("%s read from %08x\n"), size == 4 ? _T("Long") : (size == 2 ? _T("Word") : _T("Byte")), addr, v);
 		dbg = debugmem_break(9);
 	}
+#ifdef DEBUGGER
 	if (!dbg)
 		m68k_dumpstate(0, 0xffffffff);
+#endif
 	recursive--;
 	return true;
 }
@@ -3971,7 +4000,9 @@ bool debugmem_list_stackframe(bool super)
 		uae_u32 sregs[16];
 		memcpy(sregs, regs.regs, sizeof(uae_u32) * 16);
 		memcpy(regs.regs, sf->regs, sizeof(uae_u32) * 16);
+#ifdef DEBUGGER
 		m68k_disasm(sf->current_pc, NULL, 0xffffffff, 2);
+#endif
 		memcpy(regs.regs, sregs, sizeof(uae_u32) * 16);
 		console_out_f(_T("\n"));
 	}

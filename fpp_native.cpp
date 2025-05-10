@@ -66,7 +66,9 @@ static const double twoto32 = 4294967296.0;
 #define	FPCR_PRECISION_DOUBLE	0x00000080
 #define FPCR_PRECISION_EXTENDED	0x00000000
 
+#ifdef SOFTFLOAT_CONVERSIONS
 static struct float_status fs;
+#endif
 static uae_u32 fpu_mode_control = 0;
 static int fpu_prec;
 static int temp_prec;
@@ -156,8 +158,10 @@ static void set_fpucw_x87(uae_u32 m68k_cw)
 
 static void native_set_fpucw(uae_u32 m68k_cw)
 {
+#ifndef __MACH__
 #if defined(CPU_i386) || defined(CPU_x86_64)
 	set_fpucw_x87(m68k_cw);
+#endif
 #endif
 }
 
@@ -578,8 +582,6 @@ static const TCHAR *fp_print(fpdata *fpd, int mode)
 	} else if(isnan(fpd->fp)) {
 		_stprintf(fsout, _T("%c%s"), n ? '-' : '+', _T("nan"));
 	} else {
-		if(n)
-			fpd->fp *= -1.0;
 #ifdef USE_LONG_DOUBLE
 		_stprintf(fsout, _T("#%Le"), fpd->fp);
 #else
@@ -886,7 +888,7 @@ static void fp_log2(fpdata *a, fpdata *b)
 static void fp_abs(fpdata *a, fpdata *b, int prec)
 {
 	fp_set_prec(prec);
-	a->fp = b->fp < 0.0 ? -b->fp : b->fp;
+	a->fp = fabsl(b->fp);
 	fp_reset_prec(a);
 }
 static void fp_cosh(fpdata *a, fpdata *b)
@@ -1277,9 +1279,10 @@ static void fp_to_pack (fpdata *fpd, uae_u32 *wrd, int dummy)
 
 void fp_init_native(void)
 {
+#ifdef SOFTFLOAT_CONVERSIONS
 	set_floatx80_rounding_precision(80, &fs);
 	set_float_rounding_mode(float_round_to_zero, &fs);
-
+#endif
 	fpp_print = fp_print;
 	fpp_unset_snan = fp_unset_snan;
 
@@ -1370,6 +1373,7 @@ void fp_init_native(void)
 
 double softfloat_tan(double v)
 {
+#if SOFTFLOAT_CONVERSIONS
 	struct float_status f = { 0 };
 	uae_u32 w1, w2;
 	fpdata fpd = { 0 };
@@ -1383,4 +1387,7 @@ double softfloat_tan(double v)
 	float64 f64 = floatx80_to_float64(fv, &fs);
 	fp_to_double(&fpd, f64 >> 32, (uae_u32)f64);
 	return fpd.fp;
+#else
+	return tanl(v);
+#endif
 }

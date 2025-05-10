@@ -7,17 +7,25 @@
 #include "threaddep/thread.h"
 #include "memory.h"
 #include "audio.h"
+#ifdef GFXBOARD
 #include "gfxboard.h"
+#endif
 #include "scsi.h"
 #include "scsidev.h"
 #include "sana2.h"
 #include "clipboard.h"
 #include "cpuboard.h"
+#ifdef WITH_SNDBOARD
 #include "sndboard.h"
+#endif
 #include "statusline.h"
+#ifdef WITH_PPC
 #include "uae/ppc.h"
+#endif
+#ifdef CD32
 #include "cd32_fmv.h"
 #include "akiko.h"
+#endif
 #include "disk.h"
 #include "cia.h"
 #include "inputdevice.h"
@@ -29,7 +37,9 @@
 #include "blitter.h"
 #include "xwin.h"
 #include "custom.h"
+#ifdef SERIAL_PORT
 #include "serial.h"
+#endif
 #include "bsdsocket.h"
 #include "uaeserial.h"
 #include "uaeresource.h"
@@ -39,19 +49,39 @@
 #include "gui.h"
 #include "savestate.h"
 #include "uaeexe.h"
+#ifdef WITH_UAENATIVE
 #include "uaenative.h"
+#endif
 #include "tabletlibrary.h"
+#ifdef WITH_LUA
 #include "luascript.h"
+#endif
+#ifdef DRIVESOUND
 #include "driveclick.h"
+#endif
+#ifdef WITH_X86
 #include "x86.h"
+#endif
 #include "ethernet.h"
 #include "drawing.h"
+#ifdef AVIOUTPUT
 #include "videograb.h"
+#endif
 #include "rommgr.h"
 #include "newcpu.h"
+#ifdef WITH_MIDIEMU
+#include "midiemu.h"
+#endif
 #ifdef RETROPLATFORM
 #include "rp.h"
 #endif
+#ifdef WITH_DRACO
+#include "draco.h"
+#endif
+#ifdef WITH_DSP
+#include "dsp3210/dsp_glue.h"
+#endif
+#include "keyboard_mcu.h"
 #include "barto_gdbserver.h"
 
 #define MAX_DEVICE_ITEMS 64
@@ -86,6 +116,8 @@ static int device_rethink_cnt;
 static DEVICE_VOID device_rethinks[MAX_DEVICE_ITEMS];
 static int device_leave_cnt;
 static DEVICE_VOID device_leaves[MAX_DEVICE_ITEMS];
+static int device_leave_early_cnt;
+static DEVICE_VOID device_leaves_early[MAX_DEVICE_ITEMS];
 static int device_resets_cnt;
 static DEVICE_INT device_resets[MAX_DEVICE_ITEMS];
 static bool device_reset_done[MAX_DEVICE_ITEMS];
@@ -99,6 +131,7 @@ static void reset_device_items(void)
 	device_rethink_cnt = 0;
 	device_resets_cnt = 0;
 	device_leave_cnt = 0;
+	device_leave_early_cnt = 0;
 	memset(device_reset_done, 0, sizeof(device_reset_done));
 }
 
@@ -122,9 +155,14 @@ void device_add_check_config(DEVICE_VOID p)
 {
 	add_device_item(device_configs, &device_configs_cnt, p);
 }
-void device_add_exit(DEVICE_VOID p)
+void device_add_exit(DEVICE_VOID p, DEVICE_VOID p2)
 {
-	add_device_item(device_leaves, &device_leave_cnt, p);
+	if (p != NULL) {
+		add_device_item(device_leaves, &device_leave_cnt, p);
+	}
+	if (p2 != NULL) {
+		add_device_item(device_leaves_early, &device_leave_early_cnt, p2);
+	}
 }
 void device_add_reset(DEVICE_INT p)
 {
@@ -173,8 +211,11 @@ void devices_reset(int hardreset)
 	init_eventtab();
 	init_shm();
 	memory_reset();
+#ifdef AUTOCONFIG
+	rtarea_reset();
+#endif
 	DISK_reset();
-	CIA_reset();
+	CIA_reset(hardreset);
 	a1000_reset();
 #ifdef JIT
 	compemu_reset();
@@ -195,6 +236,7 @@ void devices_reset(int hardreset)
 	driveclick_reset();
 #endif
 	ethernet_reset();
+	reset_traps();
 #ifdef FILESYS
 	filesys_prepare_reset();
 	filesys_reset();
@@ -216,12 +258,12 @@ void devices_reset(int hardreset)
 	dongle_reset();
 	sampler_init();
 	device_func_reset();
-#ifdef AUTOCONFIG
-	rtarea_reset();
-#endif
 #ifdef RETROPLATFORM
 	rp_reset();
 #endif
+	keymcu_reset();
+	keymcu2_reset();
+	keymcu3_reset();
 	uae_int_requested = 0;
 }
 
@@ -250,10 +292,11 @@ void devices_hsync(void)
 {
 	DISK_hsync();
 	audio_hsync();
-	CIA_hsync_prehandler();
 
 	decide_blitter(-1);
+#ifdef SERIAL_PORT
 	serial_hsynchandler();
+#endif
 
 	execute_device_items(device_hsyncs, device_hsync_cnt);
 }
@@ -277,14 +320,23 @@ void devices_rethink(void)
 void devices_update_sound(float clk, float syncadjust)
 {
 	update_sound (clk);
+#ifdef WITH_SNDBOARD
 	update_sndboard_sound (clk / syncadjust);
+#endif
 	update_cda_sound(clk / syncadjust);
+#ifdef WITH_X86
 	x86_update_sound(clk / syncadjust);
+#endif
+#ifdef WITH_MIDIEMU
+	midi_update_sound(clk / syncadjust);
+#endif
 }
 
 void devices_update_sync(float svpos, float syncadjust)
 {
+#ifdef CD32
 	cd32_fmv_set_sync(svpos, syncadjust);
+#endif
 }
 
 void virtualdevice_free(void)
@@ -293,13 +345,17 @@ void virtualdevice_free(void)
 	// must be first
 	uae_ppc_free();
 #endif
+
+	execute_device_items(device_leaves_early, device_leave_early_cnt);
+
+	reset_traps();
+	free_traps();
 #ifdef FILESYS
 	filesys_cleanup();
 #endif
 #ifdef BSDSOCKET
 	bsdlib_reset();
 #endif
-	free_traps();
 	sampler_free();
 	inputdevice_close();
 	DISK_free();
@@ -315,15 +371,24 @@ void virtualdevice_free(void)
 #ifdef WITH_LUA
 	uae_lua_free();
 #endif
+#ifdef GFXBOARD
 	gfxboard_free();
+#endif
 	savestate_free();
 	memory_cleanup();
 	free_shm();
 	cfgfile_addcfgparam(0);
+#ifdef DRIVESOUND
 	driveclick_free();
+#endif
 	ethernet_enumerate_free();
 	rtarea_free();
-
+#ifdef WITH_DRACO
+	draco_free();
+#endif
+	keymcu_free();
+	keymcu2_free();
+	keymcu3_free();
 	execute_device_items(device_leaves, device_leave_cnt);
 }
 
@@ -382,14 +447,21 @@ void virtualdevice_init (void)
 #ifdef WITH_TABLETLIBRARY
 	tabletlib_install ();
 #endif
+#ifdef WITH_DRACO
+	draco_init();
+#endif
+	keymcu_init();
+	keymcu2_init();
+	keymcu3_init();
 	barto_gdbserver::init();
 }
 
 void devices_restore_start(void)
 {
+	restore_audio_start();
 	restore_cia_start();
 	restore_blkdev_start();
-	restore_blitter_start();
+	restore_custom_start();
 	changed_prefs.bogomem.size = 0;
 	changed_prefs.chipmem.size = 0;
 	for (int i = 0; i < MAX_RAM_BOARDS; i++) {
@@ -403,7 +475,9 @@ void devices_restore_start(void)
 
 void devices_syncchange(void)
 {
+#ifdef WITH_X86
 	x86_bridge_sync_change();
+#endif
 }
 
 void devices_pause(void)
@@ -411,11 +485,16 @@ void devices_pause(void)
 #ifdef WITH_PPC
 	uae_ppc_pause(1);
 #endif
+#ifdef WITH_DSP
+	dsp_pause(1);
+#endif
 	blkdev_entergui();
 #ifdef RETROPLATFORM
 	rp_pause(1);
 #endif
+#ifdef AVIOUTPUT
 	pausevideograb(1);
+#endif
 	ethernet_pause(1);
 }
 
@@ -428,7 +507,12 @@ void devices_unpause(void)
 #ifdef WITH_PPC
 	uae_ppc_pause(0);
 #endif
+#ifdef WITH_DSP
+	dsp_pause(0);
+#endif
+#ifdef AVIOUTPUT
 	pausevideograb(0);
+#endif
 	ethernet_pause(0);
 }
 

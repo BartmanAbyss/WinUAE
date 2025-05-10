@@ -120,6 +120,7 @@ static int screenshot_prepare(int monid, int imagemode, struct vidbuffer *vb, bo
 	int bits;
 	int depth = usealpha() ? 32 : 24;
 	bool renderTarget = true;
+	bool locked = false;
 
 	lockrtg();
 
@@ -174,7 +175,7 @@ static int screenshot_prepare(int monid, int imagemode, struct vidbuffer *vb, bo
 			rgb_rs2 = rgb_rs;
 			rgb_as2 = rgb_as;
 		} else {
-			src = mem = getfilterbuffer(monid, &width, &height, &spitch, &bits);
+			src = mem = getfilterbuffer(monid, &width, &height, &spitch, &bits, &locked);
 			needfree = true;
 			rgb_bb2 = rgb_bb;
 			rgb_gb2 = rgb_gb;
@@ -195,7 +196,7 @@ static int screenshot_prepare(int monid, int imagemode, struct vidbuffer *vb, bo
 				if (WIN32GFX_IsPicassoScreen(mon))
 					gfxboard_freertgbuffer(0, mem);
 				else
-					freefilterbuffer(0, mem);
+					freefilterbuffer(0, mem, locked);
 			}
 			goto donormal;
 		}
@@ -217,16 +218,16 @@ static int screenshot_prepare(int monid, int imagemode, struct vidbuffer *vb, bo
 		}
 
 		if (!WIN32GFX_IsPicassoScreen(mon) && screenshot_clipmode == 1) {
-			int cw, ch, cx, cy, crealh = 0;
-			if (get_custom_limits(&cw, &ch, &cx, &cy, &crealh)) {
+			int cw, ch, cx, cy, crealh = 0, hres, vres;
+			if (get_custom_limits(&cw, &ch, &cx, &cy, &crealh, &hres, &vres)) {
 				int maxw = currprefs.screenshot_max_width << currprefs.gfx_resolution;
 				int maxh = currprefs.screenshot_max_height << currprefs.gfx_vresolution;
 				int minw = currprefs.screenshot_min_width << currprefs.gfx_resolution;
 				int minh = currprefs.screenshot_min_height << currprefs.gfx_vresolution;
-				if (minw > AMIGA_WIDTH_MAX << currprefs.gfx_resolution)
-					minw = AMIGA_WIDTH_MAX << currprefs.gfx_resolution;
-				if (minh > AMIGA_HEIGHT_MAX << currprefs.gfx_resolution)
-					minh = AMIGA_HEIGHT_MAX << currprefs.gfx_resolution;
+				if (minw > (maxhpos_display + 1) << currprefs.gfx_resolution)
+					minw = (maxhpos_display + 1) << currprefs.gfx_resolution;
+				if (minh > (maxvsize_display + 1) << currprefs.gfx_resolution)
+					minh = (maxvsize_display + 1) << currprefs.gfx_resolution;
 				if (maxw < minw)
 					maxw = minw;
 				if (maxh < minh)
@@ -296,7 +297,7 @@ static int screenshot_prepare(int monid, int imagemode, struct vidbuffer *vb, bo
 				if (WIN32GFX_IsPicassoScreen(mon))
 					gfxboard_freertgbuffer(monid, mem);
 				else
-					freefilterbuffer(monid, mem);
+					freefilterbuffer(monid, mem, locked);
 			}
 			goto oops;
 		}
@@ -415,7 +416,7 @@ static int screenshot_prepare(int monid, int imagemode, struct vidbuffer *vb, bo
 			if (gfxboard_isgfxboardscreen(monid))
 				gfxboard_freertgbuffer(monid, mem);
 			else
-				freefilterbuffer(monid, mem);
+				freefilterbuffer(monid, mem, locked);
 		}
 
 	} else {
@@ -429,9 +430,9 @@ donormal:
 			height = state->Height;
 		}
 		if (D3D_isenabled(0) == 2) {
-			int w, h, pitch, bits = 32;
+			int w, h, bits, pitch;
 			void *data;
-			bool got = D3D11_capture(monid, &data, &w, &h, &pitch, renderTarget);
+			bool got = D3D11_capture(monid, &data, &w, &h, &bits, &pitch, renderTarget);
 
 			int dpitch = (((width * depth + 31) & ~31) / 8);
 			lpvBits = xmalloc(uae_u8, dpitch * height);
@@ -449,7 +450,7 @@ donormal:
 			bi->bmiHeader.biClrUsed = 0;
 			bi->bmiHeader.biClrImportant = 0;
 
-			if (got && lpvBits) {
+			if (got && lpvBits && bits <= 32) {
 				for (int y = 0; y < h && y < height; y++) {
 					uae_u8 *d = (uae_u8*)lpvBits + (height - y - 1) * dpitch;
 					uae_u32 *s = (uae_u32*)((uae_u8*)data + y * pitch);
@@ -468,7 +469,7 @@ donormal:
 				}
 			}
 			if (got)
-				D3D11_capture(monid, NULL, NULL, NULL, NULL, renderTarget);
+				D3D11_capture(monid, NULL, NULL, NULL, NULL, NULL, renderTarget);
 			d3dcaptured = true;
 
 		} else if (D3D_isenabled(0) == 1) {
@@ -496,41 +497,19 @@ donormal:
 					bi->bmiHeader.biClrImportant = 0;
 
 					if (lpvBits) {
-						if (bits == 32) {
-							for (int y = 0; y < h && y < height; y++) {
-								uae_u8 *d = (uae_u8*)lpvBits + (height - y - 1) * dpitch;
-								uae_u32 *s = (uae_u32*)((uae_u8*)l.pBits + y * l.Pitch);
-								for (int x = 0; x < w && x < width; x++) {
-									uae_u32 v = *s++;
-									d[0] = v >> 0;
-									d[1] = v >> 8;
-									d[2] = v >> 16;
-									if (depth == 32) {
-										d[3] = v >> 24;
-										d += 4;
-									} else {
-										d += 3;
-									}
-								}
-							}
-						} else if (bits == 16 || bits == 15) {
-							for (int y = 0; y < h && y < height; y++) {
-								uae_u8 *d = (uae_u8*)lpvBits + (height - y - 1) * dpitch;
-								uae_u16 *s = (uae_u16*)((uae_u8*)l.pBits + y * l.Pitch);
-								for (int x = 0; x < w && x < width; x++) {
-									uae_u16 v = s[x];
-									uae_u16 v2 = v;
-									if (bits == 16) {
-										v2 = v & 31;
-										v2 |= ((v & (31 << 5)) << 1) | (((v >> 5) & 1) << 5);
-										v2 |= (v & (31 << 10)) << 1;
-									} else {
-										v2 = v & 31;
-										v2 |= (v >> 1) & (31 << 5);
-										v2 |= (v >> 1) & (31 << 10);
-									}
-									((uae_u16*)d)[0] = v2;
-									d += 2;
+						for (int y = 0; y < h && y < height; y++) {
+							uae_u8 *d = (uae_u8*)lpvBits + (height - y - 1) * dpitch;
+							uae_u32 *s = (uae_u32*)((uae_u8*)l.pBits + y * l.Pitch);
+							for (int x = 0; x < w && x < width; x++) {
+								uae_u32 v = *s++;
+								d[0] = v >> 0;
+								d[1] = v >> 8;
+								d[2] = v >> 16;
+								if (depth == 32) {
+									d[3] = v >> 24;
+									d += 4;
+								} else {
+									d += 3;
 								}
 							}
 						}
@@ -660,6 +639,13 @@ static void count_colors(bool alpha)
 	if (!palettebm) {
 		return;
 	}
+	palettecount = 0;
+	uae_u8 r, g, b;
+	if (get_custom_color_reg(0, &r, &g, &b)) {
+		palettea[palettecount] = true;
+		palette[palettecount] = (b << 16) | (g << 8) | r;
+		palettecount++;
+	}
 	for (int i = 0; i < h; i++) {
 		uae_u8 *p = (uae_u8*)lpvBits + i * ((((w * 24) + 31) & ~31) / 8);
 		for (int j = 0; j < w; j++) {
@@ -678,29 +664,38 @@ static void count_colors(bool alpha)
 			if (c >= palettecount) {
 				if (palettecount >= 256) {
 					// run out of palette slots
-					write_log("Run out of palette slots when counting colors.");
+					write_log("Run out of palette slots when counting colors.\n");
 					uniquecolorcount = -1;
 					xfree(palettebm);
 					palettebm = NULL;
 					return;
 				}
 				palettea[palettecount] = true;
-				c = palettecount++;
-				palette[c] = co;
+				palette[palettecount] = co;
+				palettecount++;
 			}
 		}
 	}
 	write_log("Screenshot color count: %d\n", palettecount);
 
 	// get custom colors
-	int customcolorcnt = 0;
 	for (int i = 0; i < 256; i++) {
 		uniquecolors[i] = 0;
 		uniquecolorsa[i] = false;
-		uae_u8 r, g, b;
-		if (get_custom_color_reg(i, &r, &g, &b)) {
-			uniquecolors[i] = (b << 16) | (g << 8) | r;
-			customcolorcnt = i + 1;
+	}
+	int customcolorcnt = 0;
+	for (int i = 0; i < 256; i++) {
+		if (!get_custom_color_reg(i, &r, &g, &b))
+			break;
+		uae_u32 co = (b << 16) | (g << 8) | r;
+		int j = 0;
+		for (j = 0; j < customcolorcnt; j++) {
+			if (uniquecolors[i] == co)
+				break;
+		}
+		if (j >= customcolorcnt) {
+			uniquecolors[i] = co;
+			customcolorcnt++;
 		}
 	}
 	// find matching colors from bitmap and allocate colors
@@ -710,10 +705,10 @@ static void count_colors(bool alpha)
 			uae_u32 cc = palette[i];
 			for (int j = 0; j < customcolorcnt; j++) {
 				uae_u32 cc2 = uniquecolors[j];
-				if (!uniquecolorsa[i] && cc == cc2) {
-					uniquecolorsa[i] = true;
-					if (i >= uniquecolorcount) {
-						uniquecolorcount = i + 1;
+				if (!uniquecolorsa[j] && cc == cc2) {
+					uniquecolorsa[j] = true;
+					if (j >= uniquecolorcount) {
+						uniquecolorcount = j + 1;
 					}
 					palettea[i] = false;
 					match++;
@@ -731,7 +726,7 @@ static void count_colors(bool alpha)
 	if (uniquecolorcount < safecolors) {
 		uniquecolorcount = safecolors;
 	}
-	for (int i = 0; i < 256; i++) {
+	for (int i = 0; i < palettecount; i++) {
 		if (palettea[i]) {
 			int j = 0;
 			for (j = safecolors; j < 256 + safecolors; j++) {
@@ -770,14 +765,14 @@ static void count_colors(bool alpha)
 			if (prevc >= 0 && co == uniquecolors[prevc]) {
 				c = prevc;
 			} else {
-				for (c = 0; c < uniquecolorcount; c++) {
+				for (c = 0; c < 256; c++) {
 					if (uniquecolors[c] == co) {
 						prevc = c;
+						if (c > uniquecolorcount) {
+							uniquecolorcount = c + 1;
+						}
 						break;
 					}
-				}
-				if (c >= uniquecolorcount) {
-					c++;
 				}
 			}
 			*dp++ = (uae_u8)c;

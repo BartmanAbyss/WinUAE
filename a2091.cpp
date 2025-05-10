@@ -45,6 +45,9 @@
 #include "cpuboard.h"
 #include "rtc.h"
 #include "devices.h"
+#ifdef WITH_DSP
+#include "dsp3210/dsp_glue.h"
+#endif
 
 #define DMAC_8727_ROM_VECTOR 0x8000
 #define CDMAC_ROM_VECTOR 0x2000
@@ -718,7 +721,7 @@ static bool do_dma_commodore_8727(struct wd_state *wd, struct scsi_data *scsi)
 				break;
 		}
 #if WD33C93_DEBUG > 0
-		write_log (_T("%s Done DMA from WD, %d/%d %08X\n"), WD33C93, scsi->offset, scsi->data_len, (odmac_acr << 1) & dma_mask);
+		write_log (_T("%s Done DMA from WD, %d/%d %08X\n"), WD33C93, scsi->offset, scsi->data_len, (odmac_acr << 1) & wd->dma_mask);
 #endif
 		wd->cdmac.c8727_pcsd |= 1 << 7;
 		return true;
@@ -750,7 +753,7 @@ static bool do_dma_commodore_8727(struct wd_state *wd, struct scsi_data *scsi)
 				break;
 		}
 #if WD33C93_DEBUG > 0
-		write_log (_T("%s Done DMA to WD, %d/%d %08x\n"), WD33C93, scsi->offset, scsi->data_len, (odmac_acr << 1) & (currprefs.cs_z2dma32bit ? 0xffffffff : 0xffffff));
+		write_log (_T("%s Done DMA to WD, %d/%d %08x\n"), WD33C93, scsi->offset, scsi->data_len, (odmac_acr << 1) & wd->dma_mask);
 #endif
 		wd->cdmac.c8727_pcsd |= 1 << 7;
 		return true;
@@ -3625,6 +3628,14 @@ static void mbdmac_write_word (struct wd_state *wd, uae_u32 addr, uae_u32 val)
 	case 0x46:
 		wdscsi_put(&wd->wc, wd, val);
 		break;
+	case 0x5e:
+	case 0x80:
+#ifdef WITH_DSP
+		if (is_dsp_installed) {
+			dsp_write(val);
+		}
+#endif
+		break;
 	}
 }
 
@@ -3644,6 +3655,14 @@ static void mbdmac_write_byte (struct wd_state *wd, uae_u32 addr, uae_u32 val)
 	case 0x43:
 	case 0x47:
 		wdscsi_put (&wd->wc, wd, val);
+		break;
+	case 0x5f:
+	case 0x80:
+#ifdef WITH_DSP
+		if (is_dsp_installed) {
+			dsp_write(val);
+		}
+#endif
 		break;
 	default:
 		if (addr & 1)
@@ -3711,6 +3730,14 @@ static uae_u32 mbdmac_read_word (struct wd_state *wd, uae_u32 addr)
 	case 0x46:
 		v = wdscsi_get(&wd->wc, wd);
 		break;
+	case 0x5e:
+	case 0x80:
+#ifdef WITH_DSP
+		if (is_dsp_installed) {
+			v = dsp_read();
+		}
+#endif
+		break;
 	}
 #if A3000_DEBUG_IO > 1
 	write_log (_T("DMAC_WREAD %08X=%04X PC=%X\n"), vaddr, v & 0xffff, M68K_GETPC);
@@ -3740,6 +3767,14 @@ static uae_u32 mbdmac_read_byte (struct wd_state *wd, uae_u32 addr)
 		v = mbdmac_read_word (wd, addr);
 		if (!(addr & 1))
 			v >>= 8;
+		break;
+	case 0x5f:
+	case 0x80:
+#ifdef WITH_DSP
+		if (is_dsp_installed) {
+			v = dsp_read();
+		}
+#endif
 		break;
 	}
 #if A3000_DEBUG_IO > 1
@@ -4567,9 +4602,9 @@ static void wd_init(void)
 {
 	device_add_hsync(scsi_hsync);
 	device_add_rethink(rethink_a2091);
-	device_add_exit(a2091_free);
-	device_add_exit(gvp_free);
-	device_add_exit(a3000scsi_free);
+	device_add_exit(a2091_free, NULL);
+	device_add_exit(gvp_free, NULL);
+	device_add_exit(a3000scsi_free, NULL);
 }
 
 #if 0

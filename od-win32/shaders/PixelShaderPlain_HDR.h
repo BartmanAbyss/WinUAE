@@ -110,7 +110,7 @@ mul r1.xyz, r1.xyzx, l(0.077399, 0.077399, 0.077399, 0.000000)
 movc r1.xyz, r3.xyzx, r1.xyzx, r2.xyzx
 mad r0.xyz, r1.xyzx, l(3.750000, 3.750000, 3.750000, 0.000000), l(0.000100, 0.000100, 0.000100, 0.000000)
 lt r1.x, l(0.000000), r0.w
-lt r1.y, r0.w, l(0.007813)
+lt r1.y, r0.w, l(0.007812)
 and r1.x, r1.y, r1.x
 movc o0.xyzw, r1.xxxx, l(0,0,0,0), r0.xyzw
 ret 

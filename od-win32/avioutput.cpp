@@ -42,6 +42,8 @@ Copyright(c) 2001 - 2002; §ane
 #include "savestate.h"
 #include "gfxboard.h"
 
+void WIN32GUI_LoadUIString(DWORD id, TCHAR *string, DWORD dwStringLen);
+
 #define MAX_AVI_SIZE (0x80000000 - 0x1000000)
 
 static smp_comm_pipe workindex;
@@ -65,6 +67,7 @@ int avioutput_audio, avioutput_video, avioutput_enabled, avioutput_requested;
 static int videoallocated;
 
 static int aviout_width_out, aviout_height_out;
+static int aviout_width_in, aviout_height_in;
 static int aviout_xoffset_out, aviout_yoffset_out;
 int avioutput_width, avioutput_height, avioutput_bits;
 static int avioutput_bitmode = 24;
@@ -111,6 +114,7 @@ static PAVISTREAM AVIAudioStream = NULL; // compressed stream pointer
 static HACMSTREAM has = NULL; // stream handle that can be used to perform conversions
 static ACMSTREAMHEADER ash;
 static ACMFORMATCHOOSE acmopt;
+static TCHAR acmopt_title[MAX_PATH];
 static WAVEFORMATEXTENSIBLE wfxSrc; // source audio format
 static LPWAVEFORMATEX pwfxDst = NULL; // pointer to destination audio format
 static DWORD wfxMaxFmtSize;
@@ -356,7 +360,8 @@ static int AVIOutput_AllocateAudio (bool immediate)
 	acmopt.fdwStyle = ACMFORMATCHOOSE_STYLEF_INITTOWFXSTRUCT;
 	acmopt.pwfx = pwfxDst;
 	acmopt.cbwfx = wfxMaxFmtSize;
-	acmopt.pszTitle  = _T("Choose Audio Codec");
+	WIN32GUI_LoadUIString(IDS_CHOOSE_AUDIO_CODEC, acmopt_title, sizeof(acmopt_title) / sizeof(TCHAR));
+	acmopt.pszTitle = acmopt_title;
 
 	//acmopt.szFormatTag =; // not valid until the format is chosen
 	//acmopt.szFormat =; // not valid until the format is chosen
@@ -528,6 +533,8 @@ void AVIOutput_ReleaseVideo(void)
 static int AVIOutput_AllocateVideo(void)
 {
 	struct AmigaMonitor *mon = &AMonitors[aviout_monid];
+	bool locked = false;
+
 	avioutput_width = avioutput_height = avioutput_bits = 0;
 	aviout_width_out = aviout_height_out = 0;
 	aviout_xoffset_out = aviout_yoffset_out = 0;
@@ -538,7 +545,8 @@ static int AVIOutput_AllocateVideo(void)
 	if (avioutput_originalsize || WIN32GFX_IsPicassoScreen(mon)) {
 		int pitch;
 		if (!gfxboard_isgfxboardscreen(0)) {
-			getfilterbuffer(0, &avioutput_width, &avioutput_height, &pitch, &avioutput_bits);
+			uae_u8 *p = getfilterbuffer(0, &avioutput_width, &avioutput_height, &pitch, &avioutput_bits, &locked);
+			freefilterbuffer(0, p, locked);
 		} else {
 			gfxboard_freertgbuffer(0, gfxboard_getrtgbuffer(0, &avioutput_width, &avioutput_height, &pitch, &avioutput_bits, NULL));
 		}
@@ -547,7 +555,7 @@ static int AVIOutput_AllocateVideo(void)
 	if (avioutput_width == 0 || avioutput_height == 0 || avioutput_bits == 0) {
 		avioutput_width = WIN32GFX_GetWidth(mon);
 		avioutput_height = WIN32GFX_GetHeight(mon);
-		avioutput_bits = WIN32GFX_GetDepth(mon, 0);
+		avioutput_bits = 32;
 		if (WIN32GFX_IsPicassoScreen(mon) && avioutput_originalsize) {
 			struct picasso96_state_struct *state = &picasso96_state[aviout_monid];
 			avioutput_width = state->Width;
@@ -555,6 +563,8 @@ static int AVIOutput_AllocateVideo(void)
 		}
 	}
 
+	aviout_width_in = avioutput_width;
+	aviout_height_in = avioutput_height;
 	aviout_width_out = avioutput_width + 15;
 	aviout_width_out &= ~15;
 	aviout_height_out = avioutput_height + 1;
@@ -565,7 +575,7 @@ static int AVIOutput_AllocateVideo(void)
 	if (avioutput_width == 0 || avioutput_height == 0) {
 		avioutput_width = workprefs.gfx_monitor[0].gfx_size.width;
 		avioutput_height = workprefs.gfx_monitor[0].gfx_size.height;
-		avioutput_bits = WIN32GFX_GetDepth(mon, 0);
+		avioutput_bits = 32;
 	}
 	if (!aviout_height_out)
 		aviout_height_out = avioutput_height;
@@ -699,6 +709,9 @@ int AVIOutput_GetVideoCodec(TCHAR *name, int len)
 
 int AVIOutput_ChooseVideoCodec (HWND hwnd, TCHAR *s, int len)
 {
+	TCHAR tmp1[MAX_PATH];
+	char tmp2[MAX_PATH];
+
 	AVIOutput_Initialize();
 
 	AVIOutput_End();
@@ -717,7 +730,9 @@ int AVIOutput_ChooseVideoCodec (HWND hwnd, TCHAR *s, int len)
 	pcompvars->lQ = 10000; // 10000 is maximum quality setting or ICQUALITY_DEFAULT for default
 	pcompvars->lKey = avioutput_fps; // default to one key frame per second, every (FPS) frames
 	pcompvars->dwFlags = 0;
-	if (ICCompressorChoose (hwnd, ICMF_CHOOSE_DATARATE | ICMF_CHOOSE_KEYFRAME, lpbi, NULL, pcompvars, "Choose Video Codec") == TRUE) {
+	WIN32GUI_LoadUIString(IDS_CHOOSE_VIDEO_CODEC, tmp1, sizeof(tmp1) / sizeof(TCHAR));
+	ua_copy(tmp2, sizeof(tmp2), tmp1);
+	if (ICCompressorChoose(hwnd, ICMF_CHOOSE_DATARATE | ICMF_CHOOSE_KEYFRAME, lpbi, NULL, pcompvars, tmp2) == TRUE) {
 		UAEREG *avikey;
 		LRESULT ss;
 		uae_u8 *state;
@@ -962,10 +977,10 @@ static void AVIOuput_WAVWriteAudio(uae_u8 *sndbuffer, int sndbufsize)
 static int getFromRenderTarget11(struct avientry *avie, bool renderTarget)
 {
 	int ok = 0;
-	int w, h, pitch, bits = 32;
+	int w, h, pitch, bits = 32, d;
 	void *data;
 
-	bool got = D3D11_capture(aviout_monid, &data, &w, &h, &pitch, renderTarget);
+	bool got = D3D11_capture(aviout_monid, &data, &w, &h, &d, &pitch, renderTarget);
 	if (got) {
 		int dpitch = ((aviout_width_out * avioutput_bits + 31) & ~31) / 8;
 		for (int y = 0; y < h && y < aviout_height_out; y++) {
@@ -984,7 +999,7 @@ static int getFromRenderTarget11(struct avientry *avie, bool renderTarget)
 				}
 			}
 		}
-		D3D11_capture(aviout_monid, NULL, NULL, NULL, NULL, renderTarget);
+		D3D11_capture(aviout_monid, NULL, NULL, NULL, NULL, NULL, renderTarget);
 		ok = 1;
 	}
 	return ok;
@@ -1002,10 +1017,10 @@ static int getFromRenderTarget(struct avientry *avie, bool renderTarget)
 		if (SUCCEEDED(hr)) {
 			int dpitch = ((aviout_width_out * avioutput_bits + 31) & ~31) / 8;
 			if (bits == 32) {
-				for (int y = 0; y < h && y < aviout_height_out; y++) {
+				for (int y = 0; y < h && y < aviout_height_out && y < aviout_height_in; y++) {
 					uae_u8 *d = (uae_u8*)avie->lpVideo + (aviout_height_out - y - 1) * dpitch;
 					uae_u32 *s = (uae_u32*)((uae_u8*)l.pBits + y * l.Pitch);
-					for (int x = 0; x < w && x < aviout_width_out; x++) {
+					for (int x = 0; x < w && x < aviout_width_out && x < aviout_width_in; x++) {
 						uae_u32 v = *s++;
 						d[0] = v >> 0;
 						d[1] = v >> 8;
@@ -1019,10 +1034,10 @@ static int getFromRenderTarget(struct avientry *avie, bool renderTarget)
 					}
 				}
 			} else if (bits == 16 || bits == 15) {
-				for (int y = 0; y < h && y < aviout_height_out; y++) {
+				for (int y = 0; y < h && y < aviout_height_out && y < aviout_height_in; y++) {
 					uae_u8 *d = (uae_u8*)avie->lpVideo + (aviout_height_out - y - 1) * dpitch;
 					uae_u16 *s = (uae_u16*)((uae_u8*)l.pBits + y * l.Pitch);
-					for (int x = 0; x < w && x < aviout_width_out; x++) {
+					for (int x = 0; x < w && x < aviout_width_out && x < aviout_width_in; x++) {
 						uae_u16 v = s[x];
 						uae_u16 v2 = v;
 						if (bits == 16) {
@@ -1091,43 +1106,46 @@ void AVIOutput_RGBinfo (int rb, int gb, int bb, int ab, int rs, int gs, int bs, 
 }
 
 #if defined (GFXFILTER)
-extern uae_u8 *bufmem_ptr;
 
 static int getFromBuffer(struct avientry *ae, int original)
 {
 	struct AmigaMonitor *mon = &AMonitors[aviout_monid];
 	struct vidbuf_description *vidinfo = &adisplays[aviout_monid].gfxvidinfo;
 	int x, y, w, h, d;
-	uae_u8 *src, *mem;
+	bool locked = false;
+	uae_u8 *src = NULL, *mem = NULL;
 	uae_u8 *dst = ae->lpVideo;
 	int spitch, dpitch;
 	int maxw, maxh;
+	int freed = 0;
 
-	mem = NULL;
 	dpitch = ((aviout_width_out * avioutput_bits + 31) & ~31) / 8;
+	maxw = aviout_width_out;
+	maxh = aviout_height_out;
 	if (original || WIN32GFX_IsPicassoScreen(mon)) {
 		if (!gfxboard_isgfxboardscreen(aviout_monid)) {
-			src = getfilterbuffer(aviout_monid, &w, &h, &spitch, &d);
-			maxw = vidinfo->outbuffer->outwidth;
-			maxh = vidinfo->outbuffer->outheight;
+			src = mem = getfilterbuffer(aviout_monid, &w, &h, &spitch, &d, &locked);
+			maxw = w;
+			maxh = h;
+			freed = 1;
 		} else {
 			src = mem = gfxboard_getrtgbuffer(aviout_monid, &w, &h, &spitch, &d, NULL);
 			maxw = w;
 			maxh = h;
+			freed = 2;
 		}
-	} else {
-		spitch = vidinfo->outbuffer->rowbytes;
-		src = bufmem_ptr;
-		maxw = vidinfo->outbuffer->outwidth;
-		maxh = vidinfo->outbuffer->outheight;
 	}
-	if (!src)
+	if (!src) {
 		return 0;
+	}
 
 	int xoffset = currprefs.aviout_xoffset < 0 ? (aviout_width_out - avioutput_width) / 2 : -currprefs.aviout_xoffset;
 	int yoffset = currprefs.aviout_yoffset < 0 ? (aviout_height_out - avioutput_height) / 2 : -currprefs.aviout_yoffset;
 
 	dst += dpitch * aviout_height_out;
+	dst += (aviout_width_out - maxw) / 2;
+	dst -= (aviout_height_out - maxh) / 2;
+
 	if (yoffset > 0) {
 		if (yoffset >= aviout_height_out - avioutput_height)
 			yoffset = aviout_height_out - avioutput_height;
@@ -1148,7 +1166,7 @@ static int getFromBuffer(struct avientry *ae, int original)
 	if (sbpx == 3)
 		sbpx = 4;
 
-	for (y = 0; y < avioutput_height && y < maxh && y < aviout_height_out; y++) {
+	for (y = 0; y < avioutput_height && y < maxh && y < aviout_height_out && y < aviout_height_in; y++) {
 		uae_u8 *s, *d;
 		dst -= dpitch;
 		d = dst;
@@ -1158,7 +1176,7 @@ static int getFromBuffer(struct avientry *ae, int original)
 		} else if (xoffset2 > 0) {
 			s += xoffset2 * sbpx;
 		}
-		for (x = 0; x < avioutput_width && x < maxw && x < aviout_width_out; x++) {
+		for (x = 0; x < avioutput_width && x < maxw && x < aviout_width_out && x < aviout_width_in; x++) {
 			if (avioutput_bits == 8) {
 				*d++ = s[x];
 			} else if (avioutput_bits == 16) {
@@ -1188,8 +1206,13 @@ static int getFromBuffer(struct avientry *ae, int original)
 		}
 		src += spitch;
 	}
-	if (mem)
-		gfxboard_freertgbuffer(aviout_monid, mem);
+	if (mem) {
+		if (freed == 2) {
+			gfxboard_freertgbuffer(aviout_monid, mem);
+		} else if (freed == 1) {
+			freefilterbuffer(aviout_monid, mem, locked);
+		}
+	}
 	return 1;
 }
 #endif
@@ -1818,7 +1841,7 @@ bool frame_drawn(int monid)
 			StreamSizeAudioExpected += ((float)wfxSrc.Format.nSamplesPerSec) / fps_in_use;
 			if (avioutput_video) {
 				int idiff = (int)(StreamSizeAudioGot - StreamSizeAudioExpected);
-				if ((timeframes % 5) == 0)
+				if ((vsync_counter % 5) == 0)
 					write_log(_T("%.1f %.1f %d\n"), StreamSizeAudioExpected, StreamSizeAudioGot, idiff);
 				if (idiff) {
 					StreamSizeAudioGot = StreamSizeAudioExpected;
